@@ -65,7 +65,7 @@ void cfgADC(){
 	NVIC_EnableIRQ(ADC_IRQn);
 
 }
-/*
+/**
  * @brief Configuracion del Timer
  */
 void cfgTimer(){
