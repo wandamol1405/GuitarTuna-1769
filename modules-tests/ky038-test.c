@@ -1,9 +1,5 @@
 #include "LPC17xx.h"
 
-// ================================================================
-// 1. DEFINICIÓN DE FUNCIONES AUXILIARES
-// ================================================================
-
 /**
  * @brief Configura UART0 para transmitir...
  */
@@ -58,9 +54,9 @@ void init_adc(void) {
  */
 void UART0_EnviarString(char* str) {
     while (*str != '\0') {
-        while (!(LPC_UART0->LSR & 0x20));
-        LPC_UART0->THR = *str;
-        str++;
+        while (!(LPC_UART0->LSR & 0x20)); // Esperar hasta que THR esté vacío
+        LPC_UART0->THR = *str; // Enviar caracter
+        str++; // Siguiente caracter
     }
 }
 
@@ -68,15 +64,14 @@ void UART0_EnviarString(char* str) {
  * @brief Una función de espera simple
  */
 void simple_delay(volatile uint32_t loops) {
-    while(loops > 0) {
+    while(loops > 0) { 
         loops--;
     }
 }
 
-// ================================================================
-// ¡NUEVA FUNCIÓN! Reemplazo simple para itoa (Integer to ASCII)
-// Convierte un número (n) en un string (s).
-// ================================================================
+/**
+ * @brief Convierte un entero a string (itoa simple)
+ */
 void itoa_simple(int n, char s[]) {
     int i, sign;
 
@@ -105,9 +100,9 @@ void itoa_simple(int n, char s[]) {
 }
 
 
-// ================================================================
-// 2. FUNCIÓN PRINCIPAL (MAIN) - MODIFICADA
-// ================================================================
+/** 
+ * @brief Función principal
+ */
 
 int main(void) {
 
@@ -121,7 +116,7 @@ int main(void) {
     init_uart0(9600);
     init_adc();
 
-    UART0_EnviarString("--- Medidor de Silencio ADC ---\r\n");
+    UART0_EnviarString("--- Medicion del micrófono ---\r\n");
 
     while(1) {
 
@@ -134,8 +129,7 @@ int main(void) {
         // 3. Leer el valor (12 bits)
         valor_adc = (LPC_ADC->ADDR0 >> 4) & 0xFFF;
 
-        // 4. Formatear el valor en un string
-        // ---- ESTA ES LA PARTE QUE CAMBIÓ ----
+        // 4. Formatear el valor en un string y enviarlo por UART
         UART0_EnviarString("Valor ADC: ");
         itoa_simple(valor_adc, buffer_texto); // Convierte el número a texto
         UART0_EnviarString(buffer_texto);     // Envía el texto
