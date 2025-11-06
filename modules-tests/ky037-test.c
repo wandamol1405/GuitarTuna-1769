@@ -13,8 +13,8 @@ void cfgGPIO(){
 	pinGPIO.OpenDrain = PINSEL_PINMODE_NORMAL;
     GPIO_SetDir(0,22, 1);
 	LPC_GPIO0->FIOSET |= (1<<22);
-	LPC_GPIO1->FIOSET |= (1<<25);
-	LPC_GPIO1->FIOSET |= (1<<26);
+	LPC_GPIO3->FIOSET |= (1<<25);
+	LPC_GPIO3->FIOSET |= (1<<26);
 	PINSEL_ConfigPin(&pinGPIO);
 }
 
