@@ -14,7 +14,7 @@ data = deque([0]*200, maxlen=200)
 plt.ion()
 fig, ax = plt.subplots()
 line, = ax.plot(data)
-ax.set_ylim(2400, 2500)  # Rango del ADC (12 bits)
+ax.set_ylim(0, 4095)  # Rango del ADC (12 bits)
 ax.set_xlabel('Muestras')
 ax.set_ylabel('Valor ADC')
 

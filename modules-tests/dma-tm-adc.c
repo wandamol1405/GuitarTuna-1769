@@ -1,54 +1,60 @@
+/**
+ * @file dma-tm-adc.c
+ * @brief Muestreo ADC con DMA disparado por Timer y envío por UART
+ *
+ * Configura el ADC para muestrear en el canal 0, disparado por un timer que genera
+ * un evento cada 10 ms. Utiliza DMA para transferir 128 muestras a memoria cada vez
+ * que se completa la transferencia. Calcula el promedio de las muestras y lo envía
+ * por UART0.
+ *
+ */
 #include "LPC17xx.h"
-#include "LPC17xxgpdma.h"
+#include "lpc17xx_adc.h"
+#include "lpc17xx_uart.h"
+#include "lpc17xx_timer.h"
+#include "lpc17xx_gpdma.h"
+#include "lpc17xx_pinsel.h"
+#include <string.h>
 
+#define ADC_RATE 200000
+#define NUM_SAMPLES 128
+#define AHB_BASE_ADDR 0x20080000UL
 
-#define MEMORY_ADDR 0x2007C000 // Dirección base de la memoria RAM
-#define SIZE_BUFFER 4095 // Tamaño del buffer de datos del ADC a memoria 
-volatile uint32_t *bufferADC = (uint32_t *) MEMORY_ADDR; // Buffer para almacenar los datos del ADC
+typedef struct {
+    uint32_t SrcAddr;
+    uint32_t DstAddr;
+    uint32_t NextLLI;
+    uint32_t Control;
+} myLLI_t;
 
+void cfgADC(void);
+void cfgUART(void);
+void cfgTimer(void);
+void cfgDMA(void);
+void send_string(char* str);
+void itoa_simple(int, char*);
 
-void gpdma_config(void) {
-    GPDMA_Channel_CFG_Type gpdma_cfg;
-    GPDMA_LLI_Type LLI_cfg;
+myLLI_t *cfgLLI = (myLLI_t *)AHB_BASE_ADDR;
+volatile uint32_t *bufferADC = (volatile uint32_t *)(AHB_BASE_ADDR + sizeof(cfgLLI));
+volatile uint16_t average = 0;
 
-    GPDMA_Init();
-    
-    // Configurar la estructura de configuración del canal GPDMA
-    gpdma_cfg.ChannelNum = 0; // Canal 0
-    gpdma_cfg.TransferSize = SIZE_BUFFER; // Tamaño del buffer
-    gpdma_cfg.TransferType = GPDMA_TRANSFERTYPE_P2M; // Transferencia de periférico a memoria
-    gpdma_cfg.SrsMemAddr = 0;
-    gpdma_cfg.DestMemAddr = (uint32_t)bufferADC; // Dirección del buffer de destino
-    gpdma_cfg.SrcConn = GPDMA_CONN_ADC; // Fuente: ADC
-    gpdma_cfg.DestConn = 0; // Destino: memoria
-
-    gpdma_cfg.DMALLI = (uint32_t)&LLI_cfg; // Configuración de la lista de enlaces
-    LLI_cfg.SrcAddr = (uint32_t)&LPC_ADC->ADDR; // Dirección del registro de datos del ADC
-    LLI_cfg.DstAddr = (uint32_t)bufferADC; // Dirección del buffer de destino
-    LLI_cfg.NextLLI = 0; // No hay siguiente LLI
-    LLI_cfg.Control = (2<<18) | (2<<21) | (0<<26) | (1<<27) | (1<<31); // Configuración del control de la transferencia
-
-    // Inicializar el canal GPDMA con la configuración
-    
-    GPDMA_Setup(&gpdma_cfg);
-    GPDMA_ChannelCmd(0, ENABLE); // Habilitar el canal GPDMA 0
-
+int main(void) {
+    SystemInit();
+    cfgUART();          // Primero UART
+    cfgADC();
+    cfgTimer();
+    cfgDMA();
+    while (1){
+		__WFI();
+	};
 }
 
-void configADC (){
-    ADC_Init(LPC_ADC, 10000); // Inicializar el ADC con una frecuencia de 10khz
-    ADC_EdgeStartConfig(LPC_ADC, ADC_START_ON_RISING);
-    ADC_StartCmd(LPC_ADC, ADC_START_CONTINUOUS); // Iniciar el ADC en modo rafaga
-    ADC_BurstCmd(LPC_ADC, ENABLE); // Habilitar el modo rafaga
-    ADC_ChannelCmd(LPC_ADC, ADC_CHANNEL_0, ENABLE); // Habilitar el canal 0
-}
 
 /**
- * @brief Configuracion del ADC, canal 0 mediante
+ * @brief Configuracion del ADC canal 0 disparado por Match1 del Timer0
  */
-void cfgADC(){
-    
-	PINSEL_CFG_Type cfgCh0;
+void cfgADC(void){
+	PINSEL_CFG_Type cfgCh0 = {0};
 	cfgCh0.Portnum = 0;
 	cfgCh0.Pinnum = 23;
 	cfgCh0.Funcnum = 1;
@@ -57,31 +63,194 @@ void cfgADC(){
 	PINSEL_ConfigPin(&cfgCh0);
 
 	ADC_Init(LPC_ADC, ADC_RATE);
-	ADC_EdgeStartConfig(LPC_ADC, ADC_START_ON_RISING);
 	ADC_ChannelCmd(LPC_ADC, 0, ENABLE);
-	ADC_IntConfig(LPC_ADC, ADC_ADINT0, ENABLE);
 	ADC_BurstCmd(LPC_ADC, DISABLE);
-	ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01);
-	NVIC_EnableIRQ(ADC_IRQn);
 
+	// Iniciar conversion ADC cuando ocurra Match1 en Timer0
+	ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01);
+
+	// Habilitar interrupción para usar DMA
+	LPC_ADC->ADINTEN = (1 << 8);
+	NVIC_DisableIRQ(ADC_IRQn);
+}
+
+/**
+ * @brief Configuracion del Timer0 para generar Match1 periódico
+ */
+void cfgTimer(void) {
+    TIM_DeInit(LPC_TIM0);  // Asegura que se limpia todo antes de reconfigurar
+
+    TIM_TIMERCFG_Type cfgTimer;
+    cfgTimer.PrescaleOption = TIM_PRESCALE_USVAL;
+    cfgTimer.PrescaleValue = 1000;
+
+    TIM_MATCHCFG_Type cfgMatcher;
+    cfgMatcher.MatchChannel = 1;  // usar MAT1
+    cfgMatcher.IntOnMatch = DISABLE;
+    cfgMatcher.ResetOnMatch = ENABLE;
+    cfgMatcher.StopOnMatch = DISABLE;
+    cfgMatcher.ExtMatchOutputType = TIM_EXTMATCH_TOGGLE;
+    cfgMatcher.MatchValue = 10;  // 10ms
+
+    TIM_Init(LPC_TIM0, TIM_TIMER_MODE, &cfgTimer);
+    TIM_ConfigMatch(LPC_TIM0, &cfgMatcher);
+    TIM_Cmd(LPC_TIM0, ENABLE);
+}
+
+/**
+ * @brief Configuracion de UART0 (TX P0.2, RX P0.3)
+ */
+void cfgUART() {
+    PINSEL_CFG_Type cfgPinTXD0;
+    PINSEL_CFG_Type cfgPinRXD0;
+
+    cfgPinTXD0.Portnum = 0;
+    cfgPinTXD0.Pinnum = 2;
+    cfgPinTXD0.Funcnum = 1;
+    cfgPinTXD0.Pinmode = PINSEL_PINMODE_NORMAL;
+    cfgPinTXD0.OpenDrain = PINSEL_PINMODE_NORMAL;
+    PINSEL_ConfigPin(&cfgPinTXD0);
+
+    cfgPinRXD0.Portnum = 0;
+    cfgPinRXD0.Pinnum = 3;
+    cfgPinRXD0.Funcnum = 1;
+    cfgPinRXD0.Pinmode = PINSEL_PINMODE_NORMAL;
+    cfgPinRXD0.OpenDrain = PINSEL_PINMODE_NORMAL;
+    PINSEL_ConfigPin(&cfgPinRXD0);
+
+    UART_CFG_Type UARTConfig;
+    UART_FIFO_CFG_Type FIFOConfig;
+
+    UART_ConfigStructInit(&UARTConfig);
+    UART_FIFOConfigStructInit(&FIFOConfig);
+
+    UART_Init((LPC_UART_TypeDef *)LPC_UART0, &UARTConfig);
+    UART_FIFOConfig((LPC_UART_TypeDef *)LPC_UART0, &FIFOConfig);
+    UART_TxCmd((LPC_UART_TypeDef *)LPC_UART0, ENABLE);
 }
 /**
- * @brief Configuracion del Timer
+ * @brief Configuracion del modulo GPDMA
  */
-void cfgTimer(){
-	TIM_TIMERCFG_Type cfgTimer;
-	cfgTimer.PrescaleOption = TIM_PRESCALE_USVAL;
-	cfgTimer.PrescaleValue = 1000;
 
-	TIM_MATCHCFG_Type cfgMatcher;
-	cfgMatcher.MatchChannel = 0;
-	cfgMatcher.IntOnMatch = DISABLE;
-	cfgMatcher.ResetOnMatch = ENABLE;
-	cfgMatcher.StopOnMatch = DISABLE;
-	cfgMatcher.ExtMatchOutputType = TIM_EXTMATCH_TOGGLE;
-	cfgMatcher.MatcherValue = 500;
+void cfgDMA(void){
+    GPDMA_Channel_CFG_Type cfgDMA;
 
-	TIM_Init(LPC_TIM0, TIM_TIMER_MODE, &cfgTimer);
-	TIM_ConfigMatch(LPC_TIM0, &cfgMatcher);
-	TIM_Cmd(LPC_TIM0, ENABLE);
+    // Inicializa DMA (resetea lo necesario)
+    GPDMA_Init();
+
+    // Limpia flags globales antes de configurar
+    LPC_GPDMA->DMACIntTCClear = 0xFF;
+    LPC_GPDMA->DMACIntErrClr = 0xFF;
+
+    // Prepara LLI en AHB (ahb_lli)
+    cfgLLI->SrcAddr = (uint32_t)&LPC_ADC->ADGDR;
+    cfgLLI->DstAddr = (uint32_t)bufferADC;
+    cfgLLI->NextLLI = (uint32_t)&cfgLLI; // no encadenado (o apuntar a sí mismo para circular)
+    cfgLLI->Control = (NUM_SAMPLES & 0xFFF)    // transfer size
+                    | (2 << 18)                // src width = word (32 bits)
+                    | (2 << 21)                // dst width = word
+                    | (1 << 27)                // dst increment
+                    | (1UL << 31);             // enable terminal-count interrupt
+
+    cfgDMA.ChannelNum = 0;
+    cfgDMA.TransferSize = NUM_SAMPLES;
+    cfgDMA.TransferType = GPDMA_TRANSFERTYPE_P2M;
+    cfgDMA.SrcMemAddr = 0;
+    cfgDMA.DstMemAddr = (uint32_t)bufferADC;
+    cfgDMA.SrcConn = GPDMA_CONN_ADC;
+    cfgDMA.DstConn = 0;
+    cfgDMA.DMALLI = (uint32_t)&cfgLLI; // apunta al descriptor en AHB
+
+    // Setup y limpiar flags del canal
+    GPDMA_Setup(&cfgDMA);
+    LPC_GPDMA->DMACIntTCClear = (1 << cfgDMA.ChannelNum);
+    LPC_GPDMA->DMACIntErrClr = (1 << cfgDMA.ChannelNum);
+
+    // Habilitar canal
+    GPDMA_ChannelCmd(cfgDMA.ChannelNum, ENABLE);
+
+    // Enable IRQ
+    NVIC_EnableIRQ(DMA_IRQn);
 }
+
+
+/**
+ * @brief Handler de DMA
+ *
+ */
+
+void DMA_IRQHandler(void){
+    uint32_t tc_stat = LPC_GPDMA->DMACIntTCStat;
+    uint32_t err_stat = LPC_GPDMA->DMACIntErrStat;
+
+    if (err_stat & (1<<0)) {
+        send_string("GPDMA ERROR (IRQ): err_stat=");
+        char tmp[12];
+        itoa_simple(err_stat, tmp);
+        send_string(tmp);
+        send_string("\r\n");
+        // Limpiar y reintentar dejar canal limpio
+        LPC_GPDMA->DMACIntErrClr = (1 << 0);
+        GPDMA_ChannelCmd(0, DISABLE);
+        LPC_GPDMA->DMACIntTCClear = (1 << 0);
+        // re-enable
+        GPDMA_ChannelCmd(0, ENABLE);
+        return;
+    }
+
+    if (tc_stat & (1<<0)) {
+        // calculo promedio (extraer 12 bits como hacías)
+        uint32_t sum = 0;
+        for (int i = 0; i < NUM_SAMPLES; i++) {
+            uint32_t raw = bufferADC[i];
+            raw &= 0x0000FFF0;
+            uint16_t value12 = raw >> 4;
+            sum += value12;
+        }
+        average = (uint16_t)(sum / NUM_SAMPLES);
+        char out[20];
+        itoa_simple(average, out);
+        send_string("PROMEDIO DMA: ");
+        send_string(out);
+        send_string("\r\n");
+
+
+        LPC_GPDMA->DMACIntTCClear = (1 << 0);
+    }
+}
+
+
+/**
+ * @brief Convierte un entero a string (itoa simple)
+ */
+void itoa_simple(int n, char s[]) {
+    int i, sign;
+    if ((sign = n) < 0)
+        n = -n;
+    i = 0;
+    do {
+        s[i++] = n % 10 + '0';
+    } while ((n /= 10) > 0);
+    if (sign < 0)
+        s[i++] = '-';
+    s[i] = '\0';
+
+    int j = 0;
+    char temp;
+    i--;
+    while (j < i) {
+        temp = s[j];
+        s[j] = s[i];
+        s[i] = temp;
+        j++;
+        i--;
+    }
+}
+
+/**
+ * @brief Enviar string por UART0
+ */
+void send_string(char* str) {
+    UART_Send((LPC_UART_TypeDef *)LPC_UART0, (uint8_t*)str, strlen(str), BLOCKING);
+}
+

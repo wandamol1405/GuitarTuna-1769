@@ -1,10 +1,10 @@
 /**
- * @file ky038-test-driver.c
- * @brief Test driver para el sensor KY-038 con ADC y UART
+ * @file average-calculator.c
+ * @brief Calcula el valor promedio de muestras ADC y lo envía por UART.
  *
  * Configura el ADC para muestrear en el canal 0, disparado por un timer que genera
- * un evento cada 100 us. Cada vez que se completa una conversión ADC, se envía
- * el valor leído por UART0.
+ * una interrupción cada 10 ms. Se toman 200 muestras y se calcula el promedio,
+ * que luego se envía por UART0.
  *
  */
 #include "LPC17xx.h"
@@ -15,16 +15,20 @@
 #include <string.h>
 
 #define ADC_RATE 200000
+#define SAMPLES 200
 
 void cfgADC(void);
 void cfgUART(void);
 void cfgTimer(void);
 void send_string(char* str);
 void itoa_simple(int n, char s[]);
+volatile uint16_t average = 0;
+volatile uint8_t count = 0;
+volatile uint16_t samples[SAMPLES];
 
 int main(void) {
     SystemInit();
-    cfgUART();          // Primero UART
+    cfgUART();        
     cfgADC();
     cfgTimer();
     while (1);
@@ -63,7 +67,7 @@ void cfgTimer(void) {
 
     TIM_TIMERCFG_Type cfgTimer;
     cfgTimer.PrescaleOption = TIM_PRESCALE_USVAL;
-    cfgTimer.PrescaleValue = 1;
+    cfgTimer.PrescaleValue = 1000;
 
     TIM_MATCHCFG_Type cfgMatcher;
     cfgMatcher.MatchChannel = 1;  // usar MAT1
@@ -71,7 +75,7 @@ void cfgTimer(void) {
     cfgMatcher.ResetOnMatch = ENABLE;
     cfgMatcher.StopOnMatch = DISABLE;
     cfgMatcher.ExtMatchOutputType = TIM_EXTMATCH_TOGGLE;
-    cfgMatcher.MatchValue = 100;  // 100us
+    cfgMatcher.MatchValue = 10;  // 10ms
 
     TIM_Init(LPC_TIM0, TIM_TIMER_MODE, &cfgTimer);
     TIM_ConfigMatch(LPC_TIM0, &cfgMatcher);
@@ -115,13 +119,24 @@ void cfgUART() {
  * @brief Handler de interrupcion ADC
  */
 void ADC_IRQHandler(void) {
-	char buffer_string[50];
-	uint16_t value = ADC_ChannelGetData(LPC_ADC, 0);
+    char buffer_string[50];
+    uint16_t value = ADC_ChannelGetData(LPC_ADC, 0);
 
-	//send_string("Valor ADC: ");
-	itoa_simple(value, buffer_string);
-	send_string(buffer_string);
-	send_string("\r\n");
+    if (count < SAMPLES) {
+        samples[count++] = value;
+    } else {
+        uint32_t sum = 0;
+        for (int i = 0; i < SAMPLES; i++) {
+            sum += samples[i];
+        }
+        average = (uint16_t)(sum / SAMPLES);
+        count = 0; // reinicia el conteo
+
+		send_string("Valor ADC Promedio: ");
+		itoa_simple(average, buffer_string);
+		send_string(buffer_string);
+		send_string("\r\n");
+    }
 }
 
 

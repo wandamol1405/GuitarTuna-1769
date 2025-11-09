@@ -1,3 +1,12 @@
+/**
+ * @file ky038-test.c
+ * @brief Test para el sensor KY-038 con ADC y UART
+ *
+ * Configura el ADC para muestrear en el canal 0, disparado por un timer que genera
+ * un evento cada 100 us. Cada vez que se completa una conversión ADC, se envía
+ * el valor leído por UART0.
+ *
+ */
 #include "LPC17xx.h"
 
 /**
