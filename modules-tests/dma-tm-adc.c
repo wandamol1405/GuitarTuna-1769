@@ -24,12 +24,14 @@ void cfgDMA(void);
 void send_string(char* str);
 void itoa_simple(int, char*);
 
+myLLI_t *cfgLLI  = (myLLI_t *)AHB_BASE_ADDR;
+myLLI_t *cfgLLI2 = (myLLI_t *)(AHB_BASE_ADDR + sizeof(myLLI_t));
 
-myLLI_t *cfgLLI = (myLLI_t *)AHB_BASE_ADDR;
-volatile uint32_t *bufferADC = (volatile uint32_t *)(AHB_BASE_ADDR + sizeof(cfgLLI));
-myLLI_t *cfgLLI2 = (myLLI_t *)AHB_BASE_ADDR;
-volatile uint32_t *bufferADC2 = (volatile uint32_t *)(AHB_BASE_ADDR + NUM_SAMPLES + sizeof(cfgLLI));
+volatile uint32_t *bufferADC  = (volatile uint32_t *)(AHB_BASE_ADDR + 2 * sizeof(myLLI_t));
+volatile uint32_t *bufferADC2 = (volatile uint32_t *)(AHB_BASE_ADDR + 2 * sizeof(myLLI_t) + NUM_SAMPLES * sizeof(uint32_t));
+
 volatile uint16_t average = 0;
+volatile int ping_index = 0;
 
 int main(void) {
     SystemInit();
@@ -147,11 +149,7 @@ void cfgDMA(void){
     cfgLLI2->SrcAddr = (uint32_t)&LPC_ADC->ADGDR;
     cfgLLI2->DstAddr = (uint32_t)bufferADC2;
     cfgLLI2->NextLLI = (uint32_t)&cfgLLI; // no encadenado (o apuntar a sí mismo para circular)
-    cfgLLI2->Control = (NUM_SAMPLES & 0xFFF)    // transfer size
-                    | (2 << 18)                // src width = word (32 bits)
-                    | (2 << 21)                // dst width = word
-                    | (1 << 27)                // dst increment
-                    | (1UL << 31);             // enable terminal-count interrupt
+    cfgLLI2->Control = cfgLLI->Control;
 
     cfgDMA.ChannelNum = 0;
     cfgDMA.TransferSize = NUM_SAMPLES;
@@ -190,14 +188,16 @@ void DMA_IRQHandler(void){
         send_string("\r\n");
 
         GPDMA_ClearIntPending(GPDMA_STATCLR_INTERR, 0);
+        GPDMA_ChannelCmd(0, ENABLE);
         return;
     }
 
     if (tc_stat & (1<<0)) {
         // calculo promedio (extraer 12 bits como hacías)
+    	volatile uint32_t *proc_buf = (ping_index == 0) ? bufferADC : bufferADC2;
         uint32_t sum = 0;
         for (int i = 0; i < NUM_SAMPLES; i++) {
-            uint32_t raw = bufferADC[i];
+            uint32_t raw = proc_buf[i];
             raw &= 0x0000FFF0;
             uint16_t value12 = raw >> 4;
             sum += value12;
@@ -209,7 +209,10 @@ void DMA_IRQHandler(void){
         send_string(out);
         send_string("\r\n");
 
+        ping_index ^= 1;
+
         GPDMA_ClearIntPending(GPDMA_STATCLR_INTTC, 0);
+        GPDMA_ChannelCmd(0, ENABLE);
     }
 }
 
