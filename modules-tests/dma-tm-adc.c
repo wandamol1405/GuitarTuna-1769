@@ -1,3 +1,19 @@
+/*
+ * @file dma-tm-adc.c
+ * @brief Ejemplo de uso de DMA para muestreo periódico de ADC con Timer
+ *
+ * Este ejemplo configura el ADC para muestrear el canal 0 a una tasa
+ * determinada por el Timer0 (Match1). Los datos del ADC se transfieren
+ * automáticamente a un buffer en RAM usando el módulo GPDMA. Una vez que
+ * el buffer está lleno, se calcula el promedio de las muestras y se envía
+ * por UART0.
+ *
+ * Configuraciones:
+ * - ADC canal 0 (P0.23)
+ * - Timer0 Match1 para disparar el ADC cada 10ms
+ * - GPDMA canal 0 para transferir datos del ADC al buffer en RAM
+ * - UART0 para enviar resultados (TX P0.2, RX P0.3)
+ */
 #include "LPC17xx.h"
 #include "lpc17xx_adc.h"
 #include "lpc17xx_uart.h"
@@ -8,7 +24,8 @@
 
 #define ADC_RATE 200000
 #define NUM_SAMPLES 128
-#define AHB_BASE_ADDR 0x20080000UL
+#define AHB_BASE_ADDR 0x2007C000UL   // Base real de la RAM AHB (32 KB)
+
 
 typedef struct {
     uint32_t SrcAddr;
@@ -25,13 +42,10 @@ void send_string(char* str);
 void itoa_simple(int, char*);
 
 myLLI_t *cfgLLI  = (myLLI_t *)AHB_BASE_ADDR;
-myLLI_t *cfgLLI2 = (myLLI_t *)(AHB_BASE_ADDR + sizeof(myLLI_t));
 
-volatile uint32_t *bufferADC  = (volatile uint32_t *)(AHB_BASE_ADDR + 2 * sizeof(myLLI_t));
-volatile uint32_t *bufferADC2 = (volatile uint32_t *)(AHB_BASE_ADDR + 2 * sizeof(myLLI_t) + NUM_SAMPLES * sizeof(uint32_t));
+volatile uint32_t *bufferADC  = (volatile uint32_t *)(AHB_BASE_ADDR + sizeof(myLLI_t));
 
-volatile uint16_t average = 0;
-volatile int ping_index = 0;
+volatile int buffer_ready = 0;
 
 int main(void) {
     SystemInit();
@@ -40,7 +54,24 @@ int main(void) {
     cfgTimer();
     cfgDMA();
     while (1){
-		__WFI();
+		if(buffer_ready){
+			uint16_t average = 0;
+	        // calculo promedio (extraer 12 bits como hacías)
+	        uint32_t sum = 0;
+	        for (int i = 0; i < NUM_SAMPLES; i++) {
+	            uint32_t raw = bufferADC[i];
+	            raw &= 0x0000FFF0;
+	            uint16_t value12 = raw >> 4;
+	            sum += value12;
+	        }
+	        average = (uint16_t)(sum / NUM_SAMPLES);
+	        char out[20];
+	        itoa_simple(average, out);
+	        send_string("PROMEDIO DMA: ");
+	        send_string(out);
+	        send_string("\r\n");
+	        buffer_ready = 0;
+		}
 	};
 }
 
@@ -139,17 +170,13 @@ void cfgDMA(void){
 
     cfgLLI->SrcAddr = (uint32_t)&LPC_ADC->ADGDR;
     cfgLLI->DstAddr = (uint32_t)bufferADC;
-    cfgLLI->NextLLI = (uint32_t)&cfgLLI2; // no encadenado (o apuntar a sí mismo para circular)
+    cfgLLI->NextLLI = (uint32_t)cfgLLI; // apunta al propio descriptor (no &cfgLLI)
     cfgLLI->Control = (NUM_SAMPLES & 0xFFF)    // transfer size
                     | (2 << 18)                // src width = word (32 bits)
                     | (2 << 21)                // dst width = word
                     | (1 << 27)                // dst increment
                     | (1UL << 31);             // enable terminal-count interrupt
 
-    cfgLLI2->SrcAddr = (uint32_t)&LPC_ADC->ADGDR;
-    cfgLLI2->DstAddr = (uint32_t)bufferADC2;
-    cfgLLI2->NextLLI = (uint32_t)&cfgLLI; // no encadenado (o apuntar a sí mismo para circular)
-    cfgLLI2->Control = cfgLLI->Control;
 
     cfgDMA.ChannelNum = 0;
     cfgDMA.TransferSize = NUM_SAMPLES;
@@ -158,7 +185,7 @@ void cfgDMA(void){
     cfgDMA.DstMemAddr = (uint32_t)bufferADC;
     cfgDMA.SrcConn = GPDMA_CONN_ADC;
     cfgDMA.DstConn = 0;
-    cfgDMA.DMALLI = (uint32_t)&cfgLLI; // apunta al descriptor en AHB
+    cfgDMA.DMALLI = (uint32_t)cfgLLI; // apunta al descriptor en AHB
 
     // Setup y limpiar flags del canal
     GPDMA_Setup(&cfgDMA);
@@ -177,43 +204,26 @@ void cfgDMA(void){
  * @brief Handler de DMA
  */
 void DMA_IRQHandler(void){
-    uint32_t tc_stat = LPC_GPDMA->DMACIntTCStat;
-    uint32_t err_stat = LPC_GPDMA->DMACIntErrStat;
 
-    if (err_stat & (1<<0)) {
+    if (GPDMA_IntGetStatus(GPDMA_STAT_INTERR, 0)) {
         send_string("GPDMA ERROR (IRQ): err_stat=");
+        uint32_t err_stat = LPC_GPDMA->DMACIntErrStat;
         char tmp[12];
         itoa_simple(err_stat, tmp);
         send_string(tmp);
         send_string("\r\n");
 
         GPDMA_ClearIntPending(GPDMA_STATCLR_INTERR, 0);
-        GPDMA_ChannelCmd(0, ENABLE);
+        NVIC_ClearPendingIRQ(DMA_IRQn);
         return;
     }
 
-    if (tc_stat & (1<<0)) {
-        // calculo promedio (extraer 12 bits como hacías)
-    	volatile uint32_t *proc_buf = (ping_index == 0) ? bufferADC : bufferADC2;
-        uint32_t sum = 0;
-        for (int i = 0; i < NUM_SAMPLES; i++) {
-            uint32_t raw = proc_buf[i];
-            raw &= 0x0000FFF0;
-            uint16_t value12 = raw >> 4;
-            sum += value12;
-        }
-        average = (uint16_t)(sum / NUM_SAMPLES);
-        char out[20];
-        itoa_simple(average, out);
-        send_string("PROMEDIO DMA: ");
-        send_string(out);
-        send_string("\r\n");
-
-        ping_index ^= 1;
+    if (GPDMA_IntGetStatus(GPDMA_STAT_INTTC, 0)) {
+        buffer_ready = 1;
 
         GPDMA_ClearIntPending(GPDMA_STATCLR_INTTC, 0);
-        GPDMA_ChannelCmd(0, ENABLE);
     }
+    NVIC_ClearPendingIRQ(DMA_IRQn);
 }
 
 
