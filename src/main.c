@@ -77,26 +77,30 @@ int main(void) {
         
         if(calibration_mode){
             NVIC_EnableIRQ(ADC_IRQn);
-            if(calibrate_microphone()){
-                calibrated = 1;
-                NVIC_DisableIRQ(ADC_IRQn);
-                calibration_mode = 0;
-            }
+
+            if (buffer_ready) {
+                buffer_ready = 0;
+                if (calibrate_microphone()) {
+                    calibrated = 1;
+                    calibration_mode = 0;
+                } else {
+                    calibration_mode = 1; // Mantener en modo calibración
+                }
+        }
         }
         
-		if(calibrated && buffer_ready){
-			uint32_t crosses = zero_crossing_detection();
-            float window_time = (float)(NUM_SAMPLES * 10) / 1000.0f; // en segundos
-            float frequency = (float)(crosses / 2) / window_time;
-            char out[40];
-            itoa_simple((int)frequency, out);
-            send_string("FRECUENCIA: ");
-            send_string(out);
-            send_string(" Hz\r\n");
+		if (calibrated && buffer_ready){
+        buffer_ready = 0;
+        uint32_t crosses = zero_crossing_detection();
+        float window_time = (float)NUM_SAMPLES / 10000.0f; // 10 kHz
+        float frequency = ((float)crosses / 2.0f) / window_time;
 
-            buffer_ready = 0;
-		}
-	};
+        char out[40];
+        itoa_simple((int)frequency, out);
+        send_string("FRECUENCIA: ");
+        send_string(out);
+        send_string(" Hz\r\n");
+    }
 }
 
 /** ----------------- CONFIGURACIONES ------------------- */
@@ -119,6 +123,7 @@ void cfgADC(void){
 
 	// Iniciar conversion ADC cuando ocurra Match1 en Timer0
 	ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01);
+    ADC_EdgeStartConfig(LPC_ADC, ADC_START_ON_RISING);
 
 	// Habilitar interrupción para usar DMA
 	LPC_ADC->ADINTEN = (1 << 8);
@@ -133,7 +138,7 @@ void cfgTimer(void) {
 
     TIM_TIMERCFG_Type cfgTimer;
     cfgTimer.PrescaleOption = TIM_PRESCALE_USVAL;
-    cfgTimer.PrescaleValue = 1000;
+    cfgTimer.PrescaleValue = 1; //ponerlo en 1 para que cuente en us
 
     TIM_MATCHCFG_Type cfgMatcher;
     cfgMatcher.MatchChannel = 1;  // usar MAT1
@@ -141,7 +146,7 @@ void cfgTimer(void) {
     cfgMatcher.ResetOnMatch = ENABLE;
     cfgMatcher.StopOnMatch = DISABLE;
     cfgMatcher.ExtMatchOutputType = TIM_EXTMATCH_TOGGLE;
-    cfgMatcher.MatchValue = 10;  // 10ms
+    cfgMatcher.MatchValue = 100;  // 10ms --->ponerlo en 100 para que cuente 100us y tenga una frecuencia de 10kHz
 
     TIM_Init(LPC_TIM0, TIM_TIMER_MODE, &cfgTimer);
     TIM_ConfigMatch(LPC_TIM0, &cfgMatcher);
@@ -286,13 +291,14 @@ void ADC_IRQHandler(){
         uint32_t adc_value = ADC_ChannelGetData(LPC_ADC, 0);
         if(calibration_count < NUM_SAMPLES_CALIBRATION){
             bufferCalibration[calibration_count++] = adc_value;
-            if(calibration_count == NUM_SAMPLES_CALIBRATION){
-                calibrate_microphone();
+            if(calibration_count >= NUM_SAMPLES_CALIBRATION){
                 calibration_count = 0;
+                NVIC_DisableIRQ(ADC_IRQn);
+                buffer_ready = 1; // Indica que la calibración está lista
+                //aca almaceno las muestras y levanto la bandera cuando este listo 
             }
         }
     }
-    NVIC_ClearPendingIRQ(ADC_IRQn);
 }
 
 /* ------------------  CALIBRATION ------------------ */
@@ -357,7 +363,7 @@ bool calibrate_microphone(void) {
 /**
  * @brief Detección de cruces por cero y envío de resultados por UART
  */
-uint32_t zero_crossing_detection() {
+uint32_t 
     uint32_t crosses = 0;
     uint16_t value;
 
