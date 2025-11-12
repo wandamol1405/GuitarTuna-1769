@@ -14,7 +14,7 @@
 #include "lpc17xx_pinsel.h"
 #include <string.h>
 
-#define ADC_RATE 200000
+#define ADC_RATE 8000
 
 void cfgADC(void);
 void cfgUART(void);
@@ -45,10 +45,10 @@ void cfgADC(void){
 
 	ADC_Init(LPC_ADC, ADC_RATE);
 	ADC_ChannelCmd(LPC_ADC, 0, ENABLE);
-	ADC_BurstCmd(LPC_ADC, DISABLE);
+	ADC_BurstCmd(LPC_ADC, ENABLE);
 
 	// Iniciar conversion ADC cuando ocurra Match1 en Timer0
-	ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01);
+	//ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01);
 
 	// Habilitar interrupción del canal 0
 	ADC_IntConfig(LPC_ADC, ADC_ADINTEN0, ENABLE);
