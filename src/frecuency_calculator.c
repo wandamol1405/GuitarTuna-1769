@@ -1,4 +1,4 @@
-/** 
+/**
 * @file main.c
 * @brief Ejemplo completo: Muestreo de micrófono con ADC, DMA y Timer
 * Configura el ADC para muestrear el canal 0, disparado por un timer que genera
@@ -7,7 +7,7 @@
 * determinar el offset del micrófono. Una vez calibrado, se detectan los cruces
 * por cero en la señal muestreada para calcular la frecuencia de la cuerda.
  */
- 
+
 #include "LPC17xx.h"
 #include "lpc17xx_adc.h"
 #include "lpc17xx_uart.h"
@@ -16,10 +16,12 @@
 #include "lpc17xx_pinsel.h"
 #include "lpc17xx_exti.h"
 #include <string.h>
+#include <stdlib.h>
+
 
 /* MACRO PARA EL MUESTREO CONTINUO DEL MICROFONO*/
 #define ADC_RATE 200000
-#define NUM_SAMPLES 128 // TODO: a chequear
+#define NUM_SAMPLES 1500 // TODO: a chequear
 #define AHB_BASE_ADDR 0x2007C000UL   // Base real de la RAM AHB (32 KB)
 
 /* MACROS PARA LA CALIBRACION DEL MICROFONO */
@@ -41,7 +43,6 @@ void cfgADC(void);
 void cfgUART(void);
 void cfgTimer(void);
 void cfgDMA(void);
-void cfgEINT(void);
 void send_string(char* str);
 void itoa_simple(int, char*);
 int calibrate_microphone(void);
@@ -60,11 +61,11 @@ volatile uint16_t noise_threshold = SIGMA_THRESHOLD; // Umbral de ruido para det
 int calibration_count = 0; // Contador de muestras para calibración
 
 volatile int buffer_ready = 0; // Bandera para indicar que el buffer DMA está listo
-volatile int calibration_mode = 0; // Bandera para indicar modo calibración
+volatile int calibration_mode = 1; // Bandera para indicar modo calibración
 volatile int calibrated = 0; // Bandera para indicar si ya se calibró
 
 /** -----------------  MAIN ------------------- */
-/**  
+/**
 * @brief Función principal
 */
 int main(void) {
@@ -73,9 +74,8 @@ int main(void) {
     cfgADC();
     cfgTimer();
     cfgDMA();
-    cfgEINT();
     while (1){
-        
+
         if(calibration_mode){
             NVIC_EnableIRQ(ADC_IRQn);
 
@@ -91,7 +91,7 @@ int main(void) {
         }
 		if (calibrated && buffer_ready){
         buffer_ready = 0;
-        float frequency = estimate_frequency_from_crossings((uint32_t *)bufferADC, NUM_SAMPLES, 10000.0f, calibration_offset, noise_threshold);
+        float frequency = estimate_frequency_from_crossings((uint32_t *)bufferADC, NUM_SAMPLES, 10000.0f, calibration_offset, noise_threshold*6);
 
         char out[40];
         itoa_simple((int)frequency, out);
@@ -228,24 +228,6 @@ void cfgDMA(void){
     NVIC_EnableIRQ(DMA_IRQn);
 }
 
-/**
- * @brief Configuracion de EINT0 para iniciar calibracion
- */
-void cfgEINT(void){
-    PINSEL_CFG_Type pinEINT = {0};
-    pinEINT.Portnum = 2;
-    pinEINT.Pinnum = 10;
-    pinEINT.Funcnum = 1;
-    pinEINT.Pinmode = PINSEL_PINMODE_PULLUP;
-    pinEINT.OpenDrain = PINSEL_PINMODE_NORMAL;
-    PINSEL_ConfigPin(&pinEINT);
-
-    EXTI_SetMode(EXTI_EINT0, EXTI_MODE_EDGE_SENSITIVE);
-    EXTI_SetPolarity(EXTI_EINT0, EXTI_POLARITY_LOW_ACTIVE); // Flanco de bajada 
-    EXTI_ClearEXTIFlag(EXTI_EINT0);
-
-    NVIC_EnableIRQ(EINT0_IRQn);
-}
 
 /** -----------------  HANDLERS ------------------- */
 
@@ -275,15 +257,7 @@ void DMA_IRQHandler(void){
     NVIC_ClearPendingIRQ(DMA_IRQn);
 }
 
-/**
- * @brief Handler de EINT0 para iniciar calibracion
- */
-void EINT0_IRQHandler(void){
-    calibration_mode = 1;
-    calibrated = 0;
-    EXTI_ClearEXTIFlag(EXTI_EINT0);
-    NVIC_ClearPendingIRQ(EINT0_IRQn);
-}
+
 
 void ADC_IRQHandler(){
     if(ADC_ChannelGetStatus(LPC_ADC, 0, ADC_DATA_DONE)){
@@ -294,7 +268,7 @@ void ADC_IRQHandler(){
                 calibration_count = 0;
                 NVIC_DisableIRQ(ADC_IRQn);
                 buffer_ready = 1; // Indica que la calibración está lista
-                //aca almaceno las muestras y levanto la bandera cuando este listo 
+                //aca almaceno las muestras y levanto la bandera cuando este listo
             }
         }
     }
@@ -333,7 +307,7 @@ int calibrate_microphone(void) {
     float variance = ((float)sumsq / valid_samples) - (mean * mean); // Varianza de las muestras
 
     // Calculo de desviación estándar (sigma)
-    float sigma = 0; 
+    float sigma = 0;
     // Raíz cuadrada usando método de Newton-Raphson
     if (variance > 0) {
         float x = variance;
@@ -353,6 +327,11 @@ int calibrate_microphone(void) {
         itoa_simple(calibration_offset, offset_str);
         send_string("Offset calculado: ");
         send_string(offset_str);
+        send_string("\r\n");
+        send_string("Sigma calculada: ");
+        char sigma_str[20];
+        itoa_simple((int)sigma, sigma_str);
+        send_string(sigma_str);
         send_string("\r\n");
     }
     return sigma <= SIGMA_THRESHOLD;
@@ -423,8 +402,8 @@ float estimate_frequency_from_crossings(uint32_t *buf32, int N, float fs, uint16
  * @param s Cadena donde se almacena el resultado
  */
 void itoa_simple(int n, char s[]) {
-    int i, sign;  
-    if ((sign = n) < 0) 
+    int i, sign;
+    if ((sign = n) < 0)
         n = -n;
     i = 0;
     do {
