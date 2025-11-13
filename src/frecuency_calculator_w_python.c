@@ -1,4 +1,4 @@
-/** 
+/**
 * @file main.c
 * @brief Ejemplo completo: Muestreo de micrófono con ADC, DMA y Timer
 * Configura el ADC para muestrear el canal 0, disparado por un timer que genera
@@ -7,7 +7,7 @@
 * determinar el offset del micrófono. Una vez calibrado, se detectan los cruces
 * por cero en la señal muestreada para calcular la frecuencia de la cuerda.
  */
- 
+
 #include "LPC17xx.h"
 #include "lpc17xx_adc.h"
 #include "lpc17xx_uart.h"
@@ -16,11 +16,16 @@
 #include "lpc17xx_pinsel.h"
 #include "lpc17xx_exti.h"
 #include <string.h>
+#include <stdlib.h>
+#include <math.h>
+
 
 /* MACRO PARA EL MUESTREO CONTINUO DEL MICROFONO*/
-#define ADC_RATE 200000
-#define NUM_SAMPLES 128 // TODO: a chequear
+#define ADC_RATE 10000
+#define NUM_SAMPLES 2048 // TODO: a chequear
 #define AHB_BASE_ADDR 0x2007C000UL   // Base real de la RAM AHB (32 KB)
+
+#define fmaxf(a,b) ((a) > (b) ? (a) : (b))
 
 /* MACROS PARA LA CALIBRACION DEL MICROFONO */
 #define NUM_SAMPLES_CALIBRATION 256
@@ -41,12 +46,10 @@ void cfgADC(void);
 void cfgUART(void);
 void cfgTimer(void);
 void cfgDMA(void);
-void cfgEINT(void);
 void send_string(char* str);
 void itoa_simple(int, char*);
 int calibrate_microphone(void);
-float estimate_frequency_from_crossings(uint32_t *buffer, int length, float sample_rate, uint16_t offset, uint16_t threshold);
-uint32_t zero_crossing_detection(void);
+
 
 
 myLLI_t *cfgLLI  = (myLLI_t *)AHB_BASE_ADDR;
@@ -60,11 +63,12 @@ volatile uint16_t noise_threshold = SIGMA_THRESHOLD; // Umbral de ruido para det
 int calibration_count = 0; // Contador de muestras para calibración
 
 volatile int buffer_ready = 0; // Bandera para indicar que el buffer DMA está listo
-volatile int calibration_mode = 0; // Bandera para indicar modo calibración
+volatile int calibration_mode = 1; // Bandera para indicar modo calibración
 volatile int calibrated = 0; // Bandera para indicar si ya se calibró
+volatile int buffer_ready_calibrate = 0;
 
 /** -----------------  MAIN ------------------- */
-/**  
+/**
 * @brief Función principal
 */
 int main(void) {
@@ -73,14 +77,12 @@ int main(void) {
     cfgADC();
     cfgTimer();
     cfgDMA();
-    cfgEINT();
     while (1){
-        
         if(calibration_mode){
             NVIC_EnableIRQ(ADC_IRQn);
 
-            if (buffer_ready) {
-                buffer_ready = 0;
+            if (buffer_ready_calibrate) {
+            	buffer_ready_calibrate = 0;
                 if (calibrate_microphone()) {
                     calibrated = 1;
                     calibration_mode = 0;
@@ -88,17 +90,16 @@ int main(void) {
                 } else {
                     calibration_mode = 1; // Mantener en modo calibración
                 }
-        }
+            }
         }
 		if (calibrated && buffer_ready){
         buffer_ready = 0;
-        float frequency = estimate_frequency_from_crossings((uint32_t *)bufferADC, NUM_SAMPLES, 10000.0f, calibration_offset, noise_threshold);
-
-        char out[40];
-        itoa_simple((int)frequency, out);
-        send_string("FRECUENCIA: ");
-        send_string(out);
-        send_string(" Hz\r\n");
+        for(int i = 0; i < NUM_SAMPLES; i++) {
+            char temp[12];
+            itoa_simple((int)((bufferADC[i] >> 4) & 0xFFF), temp);
+            send_string(temp);
+            send_string("\r\n");
+        }
     }
 }
 }
@@ -222,31 +223,10 @@ void cfgDMA(void){
     LPC_GPDMA->DMACIntTCClear = (1 << cfgDMA.ChannelNum);
     LPC_GPDMA->DMACIntErrClr = (1 << cfgDMA.ChannelNum);
 
-    // Habilitar canal
-    GPDMA_ChannelCmd(cfgDMA.ChannelNum, ENABLE);
-
     // Enable IRQ
     NVIC_EnableIRQ(DMA_IRQn);
 }
 
-/**
- * @brief Configuracion de EINT0 para iniciar calibracion
- */
-void cfgEINT(void){
-    PINSEL_CFG_Type pinEINT = {0};
-    pinEINT.Portnum = 2;
-    pinEINT.Pinnum = 10;
-    pinEINT.Funcnum = 1;
-    pinEINT.Pinmode = PINSEL_PINMODE_PULLUP;
-    pinEINT.OpenDrain = PINSEL_PINMODE_NORMAL;
-    PINSEL_ConfigPin(&pinEINT);
-
-    EXTI_SetMode(EXTI_EINT0, EXTI_MODE_EDGE_SENSITIVE);
-    EXTI_SetPolarity(EXTI_EINT0, EXTI_POLARITY_LOW_ACTIVE); // Flanco de bajada 
-    EXTI_ClearEXTIFlag(EXTI_EINT0);
-
-    NVIC_EnableIRQ(EINT0_IRQn);
-}
 
 /** -----------------  HANDLERS ------------------- */
 
@@ -276,15 +256,7 @@ void DMA_IRQHandler(void){
     NVIC_ClearPendingIRQ(DMA_IRQn);
 }
 
-/**
- * @brief Handler de EINT0 para iniciar calibracion
- */
-void EINT0_IRQHandler(void){
-    calibration_mode = 1;
-    calibrated = 0;
-    EXTI_ClearEXTIFlag(EXTI_EINT0);
-    NVIC_ClearPendingIRQ(EINT0_IRQn);
-}
+
 
 void ADC_IRQHandler(){
     if(ADC_ChannelGetStatus(LPC_ADC, 0, ADC_DATA_DONE)){
@@ -294,8 +266,8 @@ void ADC_IRQHandler(){
             if(calibration_count >= NUM_SAMPLES_CALIBRATION){
                 calibration_count = 0;
                 NVIC_DisableIRQ(ADC_IRQn);
-                buffer_ready = 1; // Indica que la calibración está lista
-                //aca almaceno las muestras y levanto la bandera cuando este listo 
+                buffer_ready_calibrate = 1; // Indica que la calibración está lista
+                //aca almaceno las muestras y levanto la bandera cuando este listo
             }
         }
     }
@@ -306,115 +278,127 @@ void ADC_IRQHandler(){
  * @brief Calibrar el offset del micrófono
  */
 int calibrate_microphone(void) {
-    uint32_t sum = 0; // Suma de las muestras
-    uint32_t sumsq = 0; // Suma de los cuadrados de las muestras
-    uint16_t sample; // Muestra actual
-    uint16_t prev = 0; // Muestra previa para detección de outliers
+    const int max_iterations = 3;
+    uint32_t valid_count;
+    float mean = 0, sigma = 0;
+    uint16_t sample;
 
-    // --- Descartar primeras muestras
+    // Descartar las primeras muestras (ruido inicial)
     for (int i = 0; i < DISCARD_SAMPLES; i++) {
         (void)bufferCalibration[i];
     }
 
-    // --- Procesar muestras restantes
-    for(int i = DISCARD_SAMPLES; i < NUM_SAMPLES_CALIBRATION; i++) {
-        sample = bufferCalibration[i];
-        if (i > DISCARD_SAMPLES && (sample > prev + OUTLIER_THRESHOLD || sample + OUTLIER_THRESHOLD < prev)) {
-            // ignora picos bruscos
-            continue;
+    // Paso 1: cálculo inicial de media y varianza
+    for (int i = DISCARD_SAMPLES; i < NUM_SAMPLES_CALIBRATION; i++) {
+        mean += bufferCalibration[i];
+    }
+    mean /= (NUM_SAMPLES_CALIBRATION - DISCARD_SAMPLES);
+
+    for (int i = DISCARD_SAMPLES; i < NUM_SAMPLES_CALIBRATION; i++) {
+        float diff = bufferCalibration[i] - mean;
+        sigma += diff * diff;
+    }
+    sigma = sqrtf(sigma / (NUM_SAMPLES_CALIBRATION - DISCARD_SAMPLES));
+
+    // Paso 2: refinamiento iterativo descartando outliers
+    for (int iter = 0; iter < max_iterations; iter++) {
+        float new_mean = 0;
+        float new_sigma = 0;
+        valid_count = 0;
+
+        for (int i = DISCARD_SAMPLES; i < NUM_SAMPLES_CALIBRATION; i++) {
+            sample = bufferCalibration[i];
+            if (fabsf(sample - mean) <= 2.5f * sigma) { // solo muestras dentro de ±2.5σ
+                new_mean += sample;
+                valid_count++;
+            }
         }
-        sum += sample; // Suma de las muestras
-        sumsq += ((uint32_t)sample) * ((uint32_t)sample); // Suma de los cuadrados de las muestras
-        prev = sample; // Actualiza la muestra previa
+
+        if (valid_count == 0) break;
+
+        new_mean /= valid_count;
+        for (int i = DISCARD_SAMPLES; i < NUM_SAMPLES_CALIBRATION; i++) {
+            sample = bufferCalibration[i];
+            if (fabsf(sample - mean) <= 2.5f * sigma)
+                new_sigma += (sample - new_mean) * (sample - new_mean);
+        }
+        new_sigma = sqrtf(new_sigma / valid_count);
+
+        // Si el cambio en el promedio es pequeño, terminamos
+        if (fabsf(new_mean - mean) < 1.0f && fabsf(new_sigma - sigma) < 0.5f) {
+            mean = new_mean;
+            sigma = new_sigma;
+            break;
+        }
+
+        mean = new_mean;
+        sigma = new_sigma;
     }
 
-    // Calculo de media y sigma
-    int valid_samples = NUM_SAMPLES_CALIBRATION - DISCARD_SAMPLES; // Muestras válidas consideradas
-    float mean = (float)sum / valid_samples; // Media de las muestras
-    float variance = ((float)sumsq / valid_samples) - (mean * mean); // Varianza de las muestras
+    calibration_offset = (uint16_t)roundf(mean);
+    noise_threshold = (uint16_t)roundf(sigma);
 
-    // Calculo de desviación estándar (sigma)
-    float sigma = 0; 
-    // Raíz cuadrada usando método de Newton-Raphson
-    if (variance > 0) {
-        float x = variance;
-        for (int i = 0; i < 6; i++)
-            x = 0.5f * (x + variance / x);
-        sigma = x;
-    }
-
-    calibration_offset = (uint16_t)mean; // Guarda el offset calculado
-    noise_threshold = (uint16_t)sigma;
-
-    if(sigma > SIGMA_THRESHOLD) {
-        send_string("Calibracion fallida: señal inestable\r\n");
+    // Evaluar resultado final
+    if (sigma > SIGMA_THRESHOLD) {
+        send_string("⚠️ Calibracion inestable: demasiado ruido\r\n");
+        char s1[20];
+        itoa_simple((int)mean, s1);
+        send_string("Media: "); send_string(s1); send_string("\r\n");
+        char s2[20];
+        itoa_simple((int)sigma, s2);
+        send_string("Sigma: "); send_string(s2); send_string("\r\n");
+        return 0;
     } else {
-        send_string("Calibracion exitosa\r\n");
-        char offset_str[20];
-        itoa_simple(calibration_offset, offset_str);
-        send_string("Offset calculado: ");
-        send_string(offset_str);
-        send_string("\r\n");
+        send_string("✅ Calibracion exitosa\r\n");
+        char s1[20];
+        itoa_simple((int)mean, s1);
+        send_string("Offset calculado: "); send_string(s1); send_string("\r\n");
+        char s2[20];
+        itoa_simple((int)sigma, s2);
+        send_string("Sigma final: "); send_string(s2); send_string("\r\n");
+        return 1;
     }
-    return sigma <= SIGMA_THRESHOLD;
 }
+
 
 /* ------------------  ESTIMATE FREQUENCY  ------------------ */
 /**
- * @brief Determina la frecuencia de la señal en bufferADC usando detección de cruces por cero
- * @return Número de cruces por cero detectados en el buffer
+ * @brief Estima la frecuencia usando autocorrelación simple
+ * @param buf32 buffer de muestras ADC (32 bits con datos en bits [15:4])
+ * @param N cantidad de muestras
+ * @param fs frecuencia de muestreo (Hz)
+ * @param offset offset DC del micrófono
+ * @return frecuencia estimada (Hz)
  */
-float estimate_frequency_from_crossings(uint32_t *buf32, int N, float fs, uint16_t offset, uint16_t threshold) {
-    // buf32 contiene registros ADGDR (>>4 & 0xFFF)
-    #define MAX_CROSSINGS 256
-    float crossing_times[MAX_CROSSINGS];
-    int xc = 0;
-
-    // extraer muestras ya alineadas
-    int16_t prev_val = (int16_t)(((buf32[0] >> 4) & 0xFFF) - offset);
-
-    for (int i = 1; i < N && xc < MAX_CROSSINGS; i++) {
-        int16_t cur_val = (int16_t)(((buf32[i] >> 4) & 0xFFF) - offset);
-
-        // Si ambos están dentro de dead-zone, no contamos cruce
-        if (abs(prev_val) <= threshold && abs(cur_val) <= threshold) {
-            prev_val = cur_val;
-            continue;
-        }
-
-        // Detectamos cruce de signo (excluye cuando ambos >0 o ambos <0)
-        if ((prev_val < 0 && cur_val >= 0) || (prev_val > 0 && cur_val <= 0)) {
-            // Interpolacion lineal para estimar tiempo del cruce
-            float t_frac = 0.0f;
-            int16_t dy = cur_val - prev_val;
-            if (dy != 0) {
-                t_frac = (float)(-prev_val) / (float)dy; // fracción entre i-1 y i
-            }
-            float t_cross = ((float)(i - 1) + t_frac) / fs; // tiempo en segundos
-            crossing_times[xc++] = t_cross;
-        }
-        prev_val = cur_val;
+float estimate_frequency_autocorr(uint32_t *buf32, int N, float fs, uint16_t offset) {
+    // Convertir a float centrado
+    static float samples[NUM_SAMPLES];
+    for (int i = 0; i < N; i++) {
+        samples[i] = ((float)(((buf32[i] >> 4) & 0xFFF) - offset));
     }
 
-    // Necesitamos al menos 2 cruces del mismo tipo para medir periodo (ej: dos ascensos)
-    if (xc < 3) return 0.0f;
+    // Calcular autocorrelación parcial hasta la mitad del buffer
+    int max_lag = N / 2;
+    float best_corr = 0.0f;
+    int best_lag = 0;
 
-    // calcular periodos entre cruces alternando -> cada 2 cruces corresponde a un ciclo (ascenso->ascenso)
-    float sum_periods = 0.0f;
-    int count_periods = 0;
-    for (int i = 0; i + 2 < xc; i++) {
-        // periodo entre crossing i y crossing i+2
-        float period = crossing_times[i+2] - crossing_times[i];
-        if (period > 0.0f) {
-            sum_periods += period;
-            count_periods++;
+    for (int lag = 10; lag < max_lag; lag++) { // ignorar lags muy chicos (<10 muestras)
+        float sum = 0.0f;
+        for (int i = 0; i < N - lag; i++) {
+            sum += samples[i] * samples[i + lag];
+        }
+        if (sum > best_corr) {
+            best_corr = sum;
+            best_lag = lag;
         }
     }
-    if (count_periods == 0) return 0.0f;
 
-    float avg_period = sum_periods / count_periods;
-    return 1.0f / avg_period;
+    if (best_lag == 0) return 0.0f;
+
+    float period = (float)best_lag / fs;
+    return 1.0f / period;
 }
+
 
 
 /** -----------------  UTILITIES ------------------- */
@@ -424,8 +408,8 @@ float estimate_frequency_from_crossings(uint32_t *buf32, int N, float fs, uint16
  * @param s Cadena donde se almacena el resultado
  */
 void itoa_simple(int n, char s[]) {
-    int i, sign;  
-    if ((sign = n) < 0) 
+    int i, sign;
+    if ((sign = n) < 0)
         n = -n;
     i = 0;
     do {
