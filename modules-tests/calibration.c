@@ -174,85 +174,58 @@ void send_string(char* str) {
 /**
  * @brief Calibrar el offset del micrófono
  */
-int calibrate_microphone(void) {
-    const int max_iterations = 3;
-    uint32_t valid_count;
-    float mean = 0, sigma = 0;
+void calibrate_microphone(void) {
+    uint32_t sum = 0;
+    uint32_t sumsq = 0;
     uint16_t sample;
+    uint16_t prev = 0;
 
-    // Descartar las primeras muestras (ruido inicial)
+    // --- Descartar primeras muestras
     for (int i = 0; i < DISCARD_SAMPLES; i++) {
         (void)bufferCalibration[i];
     }
 
-    // Paso 1: cálculo inicial de media y varianza
-    for (int i = DISCARD_SAMPLES; i < NUM_SAMPLES_CALIBRATION; i++) {
-        mean += bufferCalibration[i];
-    }
-    mean /= (NUM_SAMPLES_CALIBRATION - DISCARD_SAMPLES);
-
-    for (int i = DISCARD_SAMPLES; i < NUM_SAMPLES_CALIBRATION; i++) {
-        float diff = bufferCalibration[i] - mean;
-        sigma += diff * diff;
-    }
-    sigma = sqrtf(sigma / (NUM_SAMPLES_CALIBRATION - DISCARD_SAMPLES));
-
-    // Paso 2: refinamiento iterativo descartando outliers
-    for (int iter = 0; iter < max_iterations; iter++) {
-        float new_mean = 0;
-        float new_sigma = 0;
-        valid_count = 0;
-
-        for (int i = DISCARD_SAMPLES; i < NUM_SAMPLES_CALIBRATION; i++) {
-            sample = bufferCalibration[i];
-            if (fabsf(sample - mean) <= 2.5f * sigma) { // solo muestras dentro de ±2.5σ
-                new_mean += sample;
-                valid_count++;
-            }
+    for(int i = DISCARD_SAMPLES; i < NUM_SAMPLES_CALIBRATION; i++) {
+        sample = bufferCalibration[i];
+        if (i > DISCARD_SAMPLES && (sample > prev + OUTLIER_THRESHOLD || sample + OUTLIER_THRESHOLD < prev)) {
+            // ignora picos bruscos
+            continue;
         }
-
-        if (valid_count == 0) break;
-
-        new_mean /= valid_count;
-        for (int i = DISCARD_SAMPLES; i < NUM_SAMPLES_CALIBRATION; i++) {
-            sample = bufferCalibration[i];
-            if (fabsf(sample - mean) <= 2.5f * sigma)
-                new_sigma += (sample - new_mean) * (sample - new_mean);
-        }
-        new_sigma = sqrtf(new_sigma / valid_count);
-
-        // Si el cambio en el promedio es pequeño, terminamos
-        if (fabsf(new_mean - mean) < 1.0f && fabsf(new_sigma - sigma) < 0.5f) {
-            mean = new_mean;
-            sigma = new_sigma;
-            break;
-        }
-
-        mean = new_mean;
-        sigma = new_sigma;
+        sum += sample;
+        sumsq += ((uint32_t)sample) * ((uint32_t)sample);
+        prev = sample;
     }
 
-    calibration_offset = (uint16_t)roundf(mean);
-    noise_threshold = (uint16_t)roundf(sigma);
+    int valid_samples = NUM_SAMPLES_CALIBRATION - DISCARD_SAMPLES;
+    float mean = (float)sum / valid_samples;
+    float variance = ((float)sumsq / valid_samples) - (mean * mean);
 
-    // Evaluar resultado final
-    if (sigma > SIGMA_THRESHOLD) {
-        send_string("⚠️ Calibracion inestable: demasiado ruido\r\n");
-        char s1[20];
-        itoa_simple((int)mean, s1);
-        send_string("Media: "); send_string(s1); send_string("\r\n");
-        char s2[20];
-        itoa_simple((int)sigma, s2);
-        send_string("Sigma: "); send_string(s2); send_string("\r\n");
-        return 0;
+    float sigma = 0;
+    if (variance > 0) {
+        float x = variance;
+        for (int i = 0; i < 6; i++)
+            x = 0.5f * (x + variance / x);
+        sigma = x;
+    }
+
+    char temp[50];
+    itoa_simple((int)mean, temp);
+    send_string("Calibracion: Mean=");
+    send_string(temp);
+    send_string(", Sigma=");
+    itoa_simple((int)sigma, temp);
+    send_string(temp);
+    send_string("\r\n");
+
+    calibration_offset = (uint16_t)mean;
+    if(sigma > SIGMA_THRESHOLD) {
+        send_string("Calibracion fallida: señal inestable\r\n");
     } else {
-        send_string("✅ Calibracion exitosa\r\n");
-        char s1[20];
-        itoa_simple((int)mean, s1);
-        send_string("Offset calculado: "); send_string(s1); send_string("\r\n");
-        char s2[20];
-        itoa_simple((int)sigma, s2);
-        send_string("Sigma final: "); send_string(s2); send_string("\r\n");
-        return 1;
+        send_string("Calibracion exitosa\r\n");
+        char offset_str[20];
+        itoa_simple(calibration_offset, offset_str);
+        send_string("Offset calculado: ");
+        send_string(offset_str);
+        send_string("\r\n");
     }
 }
