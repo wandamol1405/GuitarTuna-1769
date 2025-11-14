@@ -94,12 +94,27 @@ int main(void) {
         }
 		if (calibrated && buffer_ready){
         buffer_ready = 0;
+
+        // 1. Deshabilitamos la IRQ de DMA para que no nos pise el buffer
+        //    mientras lo estamos enviando.
+        NVIC_DisableIRQ(DMA_IRQn);
+        
         for(int i = 0; i < NUM_SAMPLES; i++) {
+            // Extraemos los 12 bits de datos (0-4095)
+            uint16_t sample = (uint16_t)((bufferADC[i] >> 4) & 0xFFF);
+            
+            // Enviamos esos 2 bytes en crudo
+            UART_Send((LPC_UART_TypeDef *)LPC_UART0, (uint8_t *)&sample, 2, BLOCKING);
+        }
+        
+        // 2. Reactivamos la IRQ de DMA para la próxima captura
+        NVIC_EnableIRQ(DMA_IRQn);
+        /*for(int i = 0; i < NUM_SAMPLES; i++) {
             char temp[12];
             itoa_simple((int)((bufferADC[i] >> 4) & 0xFFF), temp);
             send_string(temp);
             send_string("\r\n");
-        }
+        }*/
     }
 }
 }
@@ -179,6 +194,7 @@ void cfgUART() {
     UART_FIFO_CFG_Type FIFOConfig;
 
     UART_ConfigStructInit(&UARTConfig);
+    UARTConfig.Baud_rate = 921600; // Configurar baud rate a 921600 oara que tarde menos que el DMA
     UART_FIFOConfigStructInit(&FIFOConfig);
 
     UART_Init((LPC_UART_TypeDef *)LPC_UART0, &UARTConfig);
@@ -370,7 +386,7 @@ int calibrate_microphone(void) {
  * @param offset offset DC del micrófono
  * @return frecuencia estimada (Hz)
  */
-float estimate_frequency_autocorr(uint32_t *buf32, int N, float fs, uint16_t offset) {
+/*float estimate_frequency_autocorr(uint32_t *buf32, int N, float fs, uint16_t offset) {
     // Convertir a float centrado
     static float samples[NUM_SAMPLES];
     for (int i = 0; i < N; i++) {
@@ -397,7 +413,7 @@ float estimate_frequency_autocorr(uint32_t *buf32, int N, float fs, uint16_t off
 
     float period = (float)best_lag / fs;
     return 1.0f / period;
-}
+}*/
 
 
 
