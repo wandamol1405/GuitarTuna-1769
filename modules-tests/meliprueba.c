@@ -3,14 +3,13 @@
 
 
 #define MEMORY_ADDR 0x2007C000 // Dirección base de la memoria RAM
-#define SIZE_BUFFER 8192 // Cantidad de datos a capturar del ADC
+#define SIZE_BUFFER 4095 // Tamaño del buffer de datos del ADC a memoria
 #define ADC_RATE 10000 // Frecuencia de muestreo del ADC
 
 #define VALOR_MEDIO_SILENCIO 2452 // mi cero lógico 
 #define UMBRAL_RUIDO 10 // "zona muerta" +-10
 
 volatile uint32_t *bufferADC = (uint32_t *) MEMORY_ADDR; // Buffer para almacenar los datos del ADC
-
 //bandera global para avisar en el main()
 volatile uint8_t buffer_listo = 0;
 
@@ -211,7 +210,7 @@ int main(void) {
             uint32_t N_cruces = calcularCrucesPorCero(bufferADC, SIZE_BUFFER);
             
             // 2. Calcular la frecuencia (¡OJO CON EL TIEMPO!)
-            // Tiempo = 8192 muestras / 10000 muestras/seg = 0.8192 seg
+            // Tiempo = 4095 muestras / 10000 muestras/seg = 0.4095 seg
             float tiempo_ventana = (float)SIZE_BUFFER / (float)ADC_RATE;
             float frecuencia = ( (float)N_cruces / 2.0f ) / tiempo_ventana;
             
