@@ -15,6 +15,7 @@
 #include "lpc17xx_gpdma.h"
 #include "lpc17xx_pinsel.h"
 #include "lpc17xx_exti.h"
+#include "lpc17xx_systick.h"
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
@@ -22,12 +23,12 @@
 
 /* MACRO PARA EL MUESTREO CONTINUO DEL MICROFONO*/
 #define ADC_RATE 10000
-#define NUM_SAMPLES 1024 //tiene que er potencia de 2 
+#define NUM_SAMPLES 1024 //tiene que er potencia de 2
 #define AHB_BASE_ADDR 0x2007C000UL   // Base real de la RAM AHB (32 KB)
 
 /* MACROS PARA LA CALIBRACION DEL MICROFONO */
 #define NUM_SAMPLES_CALIBRATION 256
-#define SIGMA_THRESHOLD 8 // en LSB (~3 mV para ADC de 12 bits y Vref=3.3V)
+#define SIGMA_THRESHOLD 15 // en LSB (~3 mV para ADC de 12 bits y Vref=3.3V)
 #define OUTLIER_THRESHOLD 50   // LSB - ignora saltos grandes en promedio
 #define DISCARD_SAMPLES 16
 
@@ -42,8 +43,8 @@ typedef struct {
 /* Prototipos de funciones */
 void cfgADC(void);
 void cfgUART(void);
-void cfgTimer(void);
 void cfgDMA(void);
+void cfgTimer(void);
 void send_string(char* str);
 void itoa_simple(int, char*);
 int calibrate_microphone(void);
@@ -61,6 +62,7 @@ volatile uint16_t noise_threshold = SIGMA_THRESHOLD; // Umbral de ruido para det
 int calibration_count = 0; // Contador de muestras para calibración
 
 volatile int buffer_ready = 0; // Bandera para indicar que el buffer DMA está listo
+volatile int buffer_ready_calibrated = 0; // Bandera para indicar que el buffer DMA de calibración está listo
 volatile int calibration_mode = 1; // Bandera para indicar modo calibración
 volatile int calibrated = 0; // Bandera para indicar si ya se calibró
 
@@ -71,29 +73,31 @@ volatile int calibrated = 0; // Bandera para indicar si ya se calibró
 int main(void) {
     SystemInit();
     cfgUART();
-    cfgADC();
     cfgTimer();
-    cfgDMA();
-    
+    cfgADC();
+    SYSTICK_InternalInit(100); // Inicializa SysTick para medir tiempos
+    SYSTICK_Cmd(ENABLE);
+
     while (1){
 
         if(calibration_mode){
             NVIC_EnableIRQ(ADC_IRQn);
 
-            if (buffer_ready) {
-                buffer_ready = 0;
+            if (buffer_ready_calibrated) {
+                buffer_ready_calibrated = 0;
                 if (calibrate_microphone()) {
                     calibrated = 1;
                     calibration_mode = 0;
+                    cfgDMA();
+                    GPDMA_ChannelCmd(0, ENABLE);
                 } else {
                     calibration_mode = 1; // Mantener en modo calibración
                 }
+            }
         }
-        }
-		// --- ¡AQUÍ ESTÁ EL CAMBIO! ---
         if (calibrated && buffer_ready){
             buffer_ready = 0;
-
+            GPDMA_ChannelCmd(0, DISABLE);
             static uint8_t count_crosses = 0;
             const uint16_t threshold_high = calibration_offset + noise_threshold;
             const uint16_t threshold_low = calibration_offset - noise_threshold;
@@ -105,7 +109,7 @@ int main(void) {
 
             for (int i = 0; i < NUM_SAMPLES; i++) {
                 uint16_t sample = (uint16_t)((bufferADC[i] >> 4) & 0xFFF);
-                
+                char out[40];
                 if (sample > threshold_high) {
                     current = 1; // arriba
                 } else if (sample < threshold_low) {
@@ -113,11 +117,11 @@ int main(void) {
                 } else {
                     current = prev; // dentro del ruido, mantener estado previo
                 }
-                
+
                 if (current != 0 && prev != 0 && current != prev) {
                     count_crosses = (count_crosses + 1) % 2;
                 }
-                
+
                 if (current != 0) {
                     prev = current;
                 }
@@ -125,16 +129,19 @@ int main(void) {
                 if(count_crosses){
                     prev_timestamp = curr_timestamp;
                     curr_timestamp = SYSTICK_GetCurrentValue();
-                    frequency = 1 / ((prev_timestamp - curr_timestamp)/SystemCoreClock); //A CHEQUEAR -> llevar a frecuencia en Hz
+                    if(prev_timestamp>curr_timestamp){
+                    	frequency = SystemCoreClock / (prev_timestamp-curr_timestamp);
+                    }else{
+                    	frequency = SystemCoreClock / (curr_timestamp-prev_timestamp); //A CHEQUEAR -> llevar a frecuencia en Hz
                 }
+                    char out[40];
+                    itoa_simple((int)frequency, out);
+                    send_string("FRECUENCIA: ");
+                    send_string(out);
+                    send_string(" Hz\r\n");
             }
-
-            // El resto de tu código para imprimir la frecuencia funciona igual
-            char out[40];
-            itoa_simple((int)frequency, out);
-            send_string("FRECUENCIA: ");
-            send_string(out);
-            send_string(" Hz\r\n");
+            GPDMA_ChannelCmd(0, ENABLE);
+        }
         }
 }
 }
@@ -155,38 +162,13 @@ void cfgADC(void){
 
 	ADC_Init(LPC_ADC, ADC_RATE);
 	ADC_ChannelCmd(LPC_ADC, 0, ENABLE);
+	ADC_IntConfig(LPC_ADC,ADC_ADINTEN0, ENABLE);
 	ADC_BurstCmd(LPC_ADC, DISABLE);
 
 	// Iniciar conversion ADC cuando ocurra Match1 en Timer0
 	ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01);
-    ADC_EdgeStartConfig(LPC_ADC, ADC_START_ON_RISING);
 
-	// Habilitar interrupción para usar DMA
-	LPC_ADC->ADINTEN = (1 << 8);
 	NVIC_DisableIRQ(ADC_IRQn);
-}
-
-/**
- * @brief Configuracion del Timer0 para generar Match1 periódico
- */
-void cfgTimer(void) {
-    TIM_DeInit(LPC_TIM0);  // Asegura que se limpia todo antes de reconfigurar
-
-    TIM_TIMERCFG_Type cfgTimer;
-    cfgTimer.PrescaleOption = TIM_PRESCALE_USVAL;
-    cfgTimer.PrescaleValue = 1; //ponerlo en 1 para que cuente en us
-
-    TIM_MATCHCFG_Type cfgMatcher;
-    cfgMatcher.MatchChannel = 1;  // usar MAT1
-    cfgMatcher.IntOnMatch = DISABLE;
-    cfgMatcher.ResetOnMatch = ENABLE;
-    cfgMatcher.StopOnMatch = DISABLE;
-    cfgMatcher.ExtMatchOutputType = TIM_EXTMATCH_TOGGLE;
-    cfgMatcher.MatchValue = 100;  // 10ms --->ponerlo en 100 para que cuente 100us y tenga una frecuencia de 10kHz
-
-    TIM_Init(LPC_TIM0, TIM_TIMER_MODE, &cfgTimer);
-    TIM_ConfigMatch(LPC_TIM0, &cfgMatcher);
-    TIM_Cmd(LPC_TIM0, ENABLE);
 }
 
 /**
@@ -263,6 +245,29 @@ void cfgDMA(void){
     NVIC_EnableIRQ(DMA_IRQn);
 }
 
+/**
+ * @brief Configuracion del Timer0 para generar Match1 periódico
+ */
+void cfgTimer(void) {
+    TIM_DeInit(LPC_TIM0);  // Asegura que se limpia todo antes de reconfigurar
+
+    TIM_TIMERCFG_Type cfgTimer;
+    cfgTimer.PrescaleOption = TIM_PRESCALE_USVAL;
+    cfgTimer.PrescaleValue = 1;
+
+    TIM_MATCHCFG_Type cfgMatcher;
+    cfgMatcher.MatchChannel = 1;  // usar MAT1
+    cfgMatcher.IntOnMatch = DISABLE;
+    cfgMatcher.ResetOnMatch = ENABLE;
+    cfgMatcher.StopOnMatch = DISABLE;
+    cfgMatcher.ExtMatchOutputType = TIM_EXTMATCH_TOGGLE;
+    cfgMatcher.MatchValue = 10;  // 10ms
+
+    TIM_Init(LPC_TIM0, TIM_TIMER_MODE, &cfgTimer);
+    TIM_ConfigMatch(LPC_TIM0, &cfgMatcher);
+    TIM_Cmd(LPC_TIM0, ENABLE);
+}
+
 
 /** -----------------  HANDLERS ------------------- */
 
@@ -302,7 +307,7 @@ void ADC_IRQHandler(){
             if(calibration_count >= NUM_SAMPLES_CALIBRATION){
                 calibration_count = 0;
                 NVIC_DisableIRQ(ADC_IRQn);
-                buffer_ready = 1; // Indica que la calibración está lista
+                buffer_ready_calibrated = 1; // Indica que la calibración está lista
                 //aca almaceno las muestras y levanto la bandera cuando este listo
             }
         }
