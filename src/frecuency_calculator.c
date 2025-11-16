@@ -22,8 +22,8 @@
 #define ALPHA_COEFF 990 // Coeficiente alpha = 0.99 (corte bajo ~100 Hz)
 
 #define BETA_SCALER 1000 // Escala para cálculos enteros
-#define BETA_COEFF 900   // Coeficiente Beta = 0.9 (Suavizado)
-#define ONE_MINUS_BETA_COEFF 100 // Coeficiente 1 - Beta = 0.1
+#define BETA_COEFF 700   // Coeficiente Beta = 0.9 (Suavizado)
+#define ONE_MINUS_BETA_COEFF 300 // Coeficiente 1 - Beta = 0.1
 
 /* MACROS PARA LA CALIBRACION DEL MICROFONO */
 #define NUM_SAMPLES_CALIBRATION 256
