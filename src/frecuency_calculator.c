@@ -18,21 +18,21 @@
 
 #define ADC_RATE 20000
 
+/* MACROS PARA LA ESTIMACION DE LA FRECUENCIA*/
 #define ALPHA_SCALER 1000 // Escala para cálculos enteros
 #define ALPHA_COEFF 990 // Coeficiente alpha = 0.99 (corte bajo ~100 Hz)
-
 #define BETA_SCALER 1000 // Escala para cálculos enteros
 #define BETA_COEFF 700   // Coeficiente Beta = 0.9 (Suavizado)
 #define ONE_MINUS_BETA_COEFF 300 // Coeficiente 1 - Beta = 0.1
+#define LOAD 9999999
+#define FREQUENCY_BUFFER_SIZE 20
+#define UART_SEND_INTERVAL 8000
 
 /* MACROS PARA LA CALIBRACION DEL MICROFONO */
 #define NUM_SAMPLES_CALIBRATION 256
 #define SIGMA_THRESHOLD 76 // en LSB (~3 mV para ADC de 12 bits y Vref=3.3V)
 #define OUTLIER_THRESHOLD 50   // LSB - ignora saltos grandes en promedio
 #define DISCARD_SAMPLES 16
-#define LOAD 9999999
-#define FREQUENCY_BUFFER_SIZE 20
-#define UART_SEND_INTERVAL 8000
 
 void cfgADC(void);
 void cfgUART(void);
@@ -144,117 +144,132 @@ void cfgUART() {
  * @brief Handler de interrupcion ADC
  */
 void ADC_IRQHandler(void) {
-	if(ADC_ChannelGetStatus(LPC_ADC, 0, ADC_DATA_DONE)){
-	        uint32_t adc_value = ADC_ChannelGetData(LPC_ADC, 0);
-	        //NO ESTA CALIBRADO
-	        if(!calibrated){
-				if(calibration_count < NUM_SAMPLES_CALIBRATION){
-					bufferCalibration[calibration_count++] = adc_value;
-				}else{
-					calibration_count = 0;
-					buffer_ready_calibrated = 1; // Indica que la calibración está lista
-					//aca almaceno las muestras y levanto la bandera cuando este listo
-				}
-				if (buffer_ready_calibrated) {
-					buffer_ready_calibrated = 0;
-					if (calibrate_microphone()) {
-						calibrated = 1;
-					}
-				}
+    if(ADC_ChannelGetStatus(LPC_ADC, 0, ADC_DATA_DONE)){
+            uint32_t adc_value = ADC_ChannelGetData(LPC_ADC, 0); // Leer dato ADC del canal 0
 
-	        }
-	        //YA ESTA CALIBRADO
-	        if(calibrated){
-	        	//send_string("ENTRE");
-	            static uint32_t prev_timestamp = 0;
-	            static uint32_t curr_timestamp = LOAD;
-	            static int32_t prev_input = 0;
-	            static int32_t prev_output = 0;
-	            char out[40];
-	            uint32_t frequency = 0;
-	            static int current = 0; // 0 = desconocido, 1 = arriba, -1 = abajo
-	            static int prev = 0;
-	            static uint32_t uart_counter = 0;
-	            // Dentro de ADC_IRQHandler, en la sección de variables estáticas:
-	            static int32_t prev_lpf_output = 0; // Estado LPF
+            /* --- Fase de calibración: recolectar muestras para determinar offset y ruido --- */
+            if(!calibrated){
+                if(calibration_count < NUM_SAMPLES_CALIBRATION){
+                    // Almacena muestras sucesivas en el buffer de calibración
+                    bufferCalibration[calibration_count++] = adc_value;
+                }else{
+                    // Buffer completo: marcar listo y reiniciar contador para próxima vez
+                    calibration_count = 0;
+                    buffer_ready_calibrated = 1; // Indica que el buffer de calibración está completo
+                    // aca almaceno las muestras y levanto la bandera cuando este listo
+                }
+                if (buffer_ready_calibrated) {
+                    // Procesar calibración una vez que el buffer esté listo
+                    buffer_ready_calibrated = 0;
+                    if (calibrate_microphone()) {
+                        // Si la calibración fue exitosa, cambiar el estado
+                        calibrated = 1;
+                    }
+                }
 
-				static uint32_t freq_buffer[FREQUENCY_BUFFER_SIZE];
-				static uint8_t freq_idx = 0;
-				static uint8_t freq_count = 0;
+            }
 
-	            int32_t raw_sample_centered = (int32_t)adc_value - (int32_t)calibration_offset;
-	            int32_t hpf_output = (ALPHA_COEFF * (prev_output + raw_sample_centered - prev_input)) / ALPHA_SCALER;
-	            prev_input = raw_sample_centered;
-	            prev_output = hpf_output;
+            /* --- Después de calibrado: procesamiento para detección de cruces y estimación de frecuencia --- */
+            if(calibrated){
+                static uint32_t prev_timestamp = 0;      // Timestamp anterior para cálculo de periodo
+                static uint32_t curr_timestamp = LOAD;   // Timestamp actual (inicializado a LOAD)
+                static int32_t prev_input = 0;           // Estado previo de entrada del HPF
+                static int32_t prev_output = 0;          // Estado previo de salida del HPF
+                char out[40];
+                uint32_t frequency = 0;
+                static int current = 0;                  // Estado actual: 0 desconocido, 1 arriba, -1 abajo
+                static int prev = 0;                     // Estado previo (para detectar transiciones)
+                static uint32_t uart_counter = 0;        // Contador para control de envío por UART
 
-	            int32_t current_output = (ONE_MINUS_BETA_COEFF * hpf_output + BETA_COEFF * prev_lpf_output) / BETA_SCALER;
-	            prev_lpf_output = current_output;
+                /* Estados estáticos para filtros */
+                static int32_t prev_lpf_output = 0;      // Estado previo del LPF (suavizado)
 
-				if (current_output > noise_threshold) {
-					//send_string("arriba");
-					//send_string("\r\n");
-					current = 1; // arriba
-				} else if (current_output < -noise_threshold) {
-					current = -1; // abajo
-					//send_string("abajo");
-					//send_string("\r\n");
-				} else {
-					current = prev; // dentro del ruido, mantener estado previo
-				}
+                /* Buffer circular para almacenar frecuencias recientes y promediar */
+                static uint32_t freq_buffer[FREQUENCY_BUFFER_SIZE];
+                static uint8_t freq_idx = 0;
+                static uint8_t freq_count = 0;
 
-				if (current==1&&prev==-1) {
-					//itoa_simple(count_crosses, out);
-					//send_string(out);
-					//send_string("\r\n");
-					prev_timestamp = curr_timestamp;
-					curr_timestamp = SYSTICK_GetCurrentValue();
-					if(prev_timestamp>curr_timestamp){
-						frequency = SystemCoreClock / (prev_timestamp-curr_timestamp);
-						if(frequency >80 && frequency < 400){
-							freq_buffer[freq_idx] = frequency;
-							freq_idx = (freq_idx + 1) % FREQUENCY_BUFFER_SIZE;
-							if (freq_count < FREQUENCY_BUFFER_SIZE) {
-								freq_count++;
-							}
-						}
-					}
+                // Centrar la muestra respecto del offset calculado en la calibración
+                int32_t raw_sample_centered = (int32_t)adc_value - (int32_t)calibration_offset;
 
-					//itoa_simple((int)frequency, out);
-					//send_string("FRECUENCIA: ");
-					//send_string(out);
-					//send_string(" Hz\r\n");
-				}
+                // High-pass filter (HPF) en forma discreta (implementado en enteros)
+                // hpf_output = alpha * (prev_output + x[n] - x[n-1])
+                int32_t hpf_output = (ALPHA_COEFF * (prev_output + raw_sample_centered - prev_input)) / ALPHA_SCALER;
+                prev_input = raw_sample_centered; // actualizar x[n-1]
+                prev_output = hpf_output;         // actualizar estado del HPF
 
-				if (current != 0) {
-					prev = current;
-				}
+                // Low-pass / suavizado (LPF) exponencial aproximado con coeficientes enteros
+                // current_output = (1 - beta)*hpf_output + beta*prev_lpf_output
+                int32_t current_output = (ONE_MINUS_BETA_COEFF * hpf_output + BETA_COEFF * prev_lpf_output) / BETA_SCALER;
+                prev_lpf_output = current_output; // actualizar estado del LPF
 
-				uart_counter++;
-				if (uart_counter >= UART_SEND_INTERVAL) {
-					uart_counter = 0; // Reinicia el contador
+                // Decidir si la señal está por encima/por debajo del ruido (umbrales positivos/negativos)
+                if (current_output > noise_threshold) {
+                    current = 1; // señal "arriba"
+                } else if (current_output < -noise_threshold) {
+                    current = -1; // señal "abajo"
+                } else {
+                    // Dentro del rango de ruido: mantener el estado previo para evitar rebote
+                    current = prev;
+                }
 
-					if (freq_count > 0) {
-						// Calcular la frecuencia promedio SOLO cuando se va a enviar
-						uint64_t sum_freq = 0;
-						for (int i = 0; i < freq_count; i++) {
-							sum_freq += freq_buffer[i];
-						}
-						uint32_t avg_frequency = (uint32_t)(sum_freq / freq_count);
+                // Detectar transición de -1 a +1 (cruce positivo): indicativo de período completo
+                if (current == 1 && prev == -1) {
+                    // Guardar timestamps para calcular periodo y luego frecuencia
+                    prev_timestamp = curr_timestamp;
+                    curr_timestamp = SYSTICK_GetCurrentValue();
 
-						itoa_simple((int)avg_frequency, out);
-						send_string("FRECUENCIA PROMEDIO: ");
-						send_string(out);
-						send_string(" Hz\r\n");
-					} else {
-						send_string("Sin señal valida...\r\n");
-					}
+                    // Systick cuenta decreciente; cuidar wrap-around comparando correctamente
+                    if(prev_timestamp > curr_timestamp){
+                        // Calcular frecuencia aproximada: SystemCoreClock / ticks_de_periodo
+                        frequency = SystemCoreClock / (prev_timestamp - curr_timestamp);
 
+                        // Filtrar frecuencias plausibles antes de almacenar
+                        if(frequency > 80 && frequency < 400){
+                            // Almacenar en buffer circular para posterior promediado
+                            freq_buffer[freq_idx] = frequency;
+                            freq_idx = (freq_idx + 1) % FREQUENCY_BUFFER_SIZE;
+                            if (freq_count < FREQUENCY_BUFFER_SIZE) {
+                                freq_count++;
+                            }
+                        }
+                    }
 
-	    }
+                    // (Opcional) se podría enviar cada frecuencia individual aquí, se optó por promediar periódicamente
+                }
 
-	}
-	}
-	NVIC_ClearPendingIRQ(ADC_IRQn);
+                // Actualizar estado previo si hay un estado válido
+                if (current != 0) {
+                    prev = current;
+                }
+
+                // Controlar envío por UART cada UART_SEND_INTERVAL muestras de ADC
+                uart_counter++;
+                if (uart_counter >= UART_SEND_INTERVAL) {
+                    uart_counter = 0; // Reinicia el contador
+
+                    if (freq_count > 0) {
+                        // Calcular frecuencia promedio SOLO cuando se va a enviar (reduce jitter)
+                        uint64_t sum_freq = 0;
+                        for (int i = 0; i < freq_count; i++) {
+                            sum_freq += freq_buffer[i];
+                        }
+                        uint32_t avg_frequency = (uint32_t)(sum_freq / freq_count);
+
+                        // Enviar por UART la frecuencia promedio
+                        itoa_simple((int)avg_frequency, out);
+                        send_string("FRECUENCIA PROMEDIO: ");
+                        send_string(out);
+                        send_string(" Hz\r\n");
+                    } else {
+                        // No se detectaron cruces válidos recientemente
+                        send_string("Sin señal valida...\r\n");
+                    }
+                }
+
+    }
+    NVIC_ClearPendingIRQ(ADC_IRQn);
+}
 }
 
 
