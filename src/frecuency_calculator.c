@@ -21,6 +21,10 @@
 #define ALPHA_SCALER 1000 // Escala para cálculos enteros
 #define ALPHA_COEFF 990 // Coeficiente alpha = 0.99 (corte bajo ~100 Hz)
 
+#define BETA_SCALER 1000 // Escala para cálculos enteros
+#define BETA_COEFF 900   // Coeficiente Beta = 0.9 (Suavizado)
+#define ONE_MINUS_BETA_COEFF 100 // Coeficiente 1 - Beta = 0.1
+
 /* MACROS PARA LA CALIBRACION DEL MICROFONO */
 #define NUM_SAMPLES_CALIBRATION 256
 #define SIGMA_THRESHOLD 76 // en LSB (~3 mV para ADC de 12 bits y Vref=3.3V)
@@ -171,16 +175,20 @@ void ADC_IRQHandler(void) {
 	            static int current = 0; // 0 = desconocido, 1 = arriba, -1 = abajo
 	            static int prev = 0;
 	            static uint32_t uart_counter = 0;
+	            // Dentro de ADC_IRQHandler, en la sección de variables estáticas:
+	            static int32_t prev_lpf_output = 0; // Estado LPF
 
 				static uint32_t freq_buffer[FREQUENCY_BUFFER_SIZE];
 				static uint8_t freq_idx = 0;
 				static uint8_t freq_count = 0;
 
 	            int32_t raw_sample_centered = (int32_t)adc_value - (int32_t)calibration_offset;
-	            int32_t current_output = (ALPHA_COEFF * (prev_output + raw_sample_centered - prev_input)) / ALPHA_SCALER;
-
+	            int32_t hpf_output = (ALPHA_COEFF * (prev_output + raw_sample_centered - prev_input)) / ALPHA_SCALER;
 	            prev_input = raw_sample_centered;
-	            prev_output = current_output;
+	            prev_output = hpf_output;
+
+	            int32_t current_output = (ONE_MINUS_BETA_COEFF * hpf_output + BETA_COEFF * prev_lpf_output) / BETA_SCALER;
+	            prev_lpf_output = current_output;
 
 				if (current_output > noise_threshold) {
 					//send_string("arriba");
@@ -202,10 +210,12 @@ void ADC_IRQHandler(void) {
 					curr_timestamp = SYSTICK_GetCurrentValue();
 					if(prev_timestamp>curr_timestamp){
 						frequency = SystemCoreClock / (prev_timestamp-curr_timestamp);
-						freq_buffer[freq_idx] = frequency;
-						freq_idx = (freq_idx + 1) % FREQUENCY_BUFFER_SIZE;
-						if (freq_count < FREQUENCY_BUFFER_SIZE) {
-							freq_count++;
+						if(frequency >80 && frequency < 400){
+							freq_buffer[freq_idx] = frequency;
+							freq_idx = (freq_idx + 1) % FREQUENCY_BUFFER_SIZE;
+							if (freq_count < FREQUENCY_BUFFER_SIZE) {
+								freq_count++;
+							}
 						}
 					}
 
