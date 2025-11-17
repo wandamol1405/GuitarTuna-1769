@@ -47,7 +47,7 @@ typedef struct {
 #define BETA_SCALER 1000 // Escala para cálculos enteros
 #define BETA_COEFF 700   // Coeficiente Beta = 0.9 (Suavizado)
 #define ONE_MINUS_BETA_COEFF 300 // Coeficiente 1 - Beta = 0.1
-#define FREQUENCY_BUFFER_SIZE 25
+#define FREQUENCY_BUFFER_SIZE 50
 #define UART_SEND_INTERVAL 8000
 
 
@@ -145,7 +145,6 @@ int main(void) {
 			// Enviar por UART la frecuencia promedio
 			char out[40];
 			itoa_simple((int)avg_frequency, out);
-			send_string("FRECUENCIA PROMEDIO: ");
 			send_string(out);
 			send_string(" Hz\r\n");
 		} else {
@@ -431,9 +430,10 @@ uint32_t estimate_frequency(uint32_t *samples){
 	static int current = 0;					// Estado actual: 0 desconocido, 1 arriba, -1 abajo
 	static int prev = 0;					// Estado previo (para detectar transiciones)
 
-	static uint32_t crosses = 0;
-	static uint32_t cross_prev = 0;
-	static uint32_t N = 0;
+	uint32_t first_cross = 0; // Almacena el índice del primer cruce
+	uint32_t last_cross = 0;  // Almacena el índice del último cruce
+	uint32_t total_crosses = 0; // Contador de cruces detectados
+	uint32_t N = 0;
 
 	/* Estado estatico para filtros */
 	static int32_t prev_lpf_output = 0; 	// Estado previo del LPF (suavizado)
@@ -468,15 +468,11 @@ uint32_t estimate_frequency(uint32_t *samples){
 
 		// Detectar transicion de -1 a +1 (crece positivo) -> indica el periodo completo
 		if(current == 1 && prev == -1){
-			crosses++;
-			if(cross_prev != 0 || crosses > 1)
-			{
-				uint32_t cross_curr = i;
-				if(cross_prev != 0){
-								N = cross_curr - cross_prev;
-							}
-							cross_prev = cross_curr;
+			if(first_cross == 0){
+				first_cross = i;
 			}
+			last_cross = i;
+			total_crosses++;
 		}
 		// Actualizar estado previo si hay un estado valido
 		if(current != 0){
@@ -484,8 +480,21 @@ uint32_t estimate_frequency(uint32_t *samples){
 		}
 
 	}
-	if(N>0){
-		frequency = ADC_RATE / N;
+
+	if (total_crosses > 1) {
+	    // Distancia total en muestras / Número de periodos completos
+	    uint32_t total_samples = last_cross - first_cross;
+	    // N (periodo promedio) = (Total de muestras / Total de periodos completos)
+	    N = total_samples / (total_crosses - 1);
+	} else {
+	    N = 0; // Menos de un ciclo completo detectado
+	}
+
+	if(N > 0){
+	    // Usar la tasa de muestreo adecuada (20000 o 40000)
+	    frequency = ADC_RATE / N;
+	} else {
+	    frequency = 0;
 	}
 
 	return frequency;
