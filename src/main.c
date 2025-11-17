@@ -50,6 +50,8 @@ typedef struct {
 #define FREQUENCY_BUFFER_SIZE 50
 #define UART_SEND_INTERVAL 8000
 
+#define STRINGS 6
+#define FREQUENCY_THRESHOLD 10
 
 /* Prototipos de funciones */
 void cfgADC(void);
@@ -61,6 +63,7 @@ void send_string(char* str);
 void itoa_simple(int, char*);
 int calibrate_microphone(void);
 uint32_t estimate_frequency(uint32_t *samples);
+void compare_frequency(uint32_t frequency);
 
 
 myLLI_t *cfgLLI_A  = (myLLI_t *)AHB_BASE_ADDR;
@@ -76,9 +79,13 @@ volatile uint16_t noise_threshold = SIGMA_THRESHOLD; // Umbral de ruido para det
 int calibration_count = 0; // Contador de muestras para calibración
 
 volatile int buffer_ready_dma = 0; // Bandera para indicar que el buffer DMA está listo
-volatile int calibration_mode = 1; // Bandera para indicar modo calibración
+volatile int calibration_mode = 0; // Bandera para indicar modo calibración
 volatile int calibrated = 0; // Bandera para indicar si ya se calibró
 volatile int buffer_ready_calibrate = 0;
+
+static uint8_t start = 0;
+static uint16_t strings[STRINGS] = {330, 246, 196, 147, 110, 82};
+static uint8_t curr_string = 0;
 
 /** -----------------  MAIN ------------------- */
 /**
@@ -97,61 +104,59 @@ int main(void) {
 	volatile uint32_t frequency = 0;
 
     while (1){
-    	// INICIO DEL SISTEMA -> DESCALIBRADO
-        if(calibration_mode){
-        	//Entra en modo de calibracion
-            NVIC_EnableIRQ(ADC_IRQn);
+    	if(start){
+        	// INICIO DEL SISTEMA -> DESCALIBRADO
+            if(calibration_mode){
+            	//Entra en modo de calibracion
+                NVIC_EnableIRQ(ADC_IRQn);
 
-            if (buffer_ready_calibrate) {
-                buffer_ready_calibrate = 0;
-                if (calibrate_microphone()) {
-                    calibrated = 1;
-                    calibration_mode = 0;
-                    GPDMA_ChannelCmd(0, ENABLE);
-                } else {
-                    calibration_mode = 1; // Mantener en modo calibración
+                if (buffer_ready_calibrate) {
+                    buffer_ready_calibrate = 0;
+                    if (calibrate_microphone()) {
+                        calibrated = 1;
+                        calibration_mode = 0;
+                        GPDMA_ChannelCmd(0, ENABLE);
+                    } else {
+                        calibration_mode = 1; // Mantener en modo calibración
+                    }
                 }
             }
-        }
-		if (calibrated){
-			volatile uint32_t *buffer = NULL;
-			if (buffer_ready_dma == 1){
-			        buffer = bufferADC_A;
-			        buffer_ready_dma = 0; // Resetear bandera
-			    } else if (buffer_ready_dma == 2){
-			        buffer = bufferADC_B;
-			        buffer_ready_dma = 0; // Resetear bandera
-			    }
-			if(buffer != NULL){
-				frequency = estimate_frequency((uint32_t *)buffer);
-			}
-			// Filtrar frecuencias plausibles antes de almacenar
-			if(frequency > 80 && frequency < 400){
-				// Almacenar en buffer circular para posterior promediado
-				freq_buffer[freq_idx] = frequency;
-				freq_idx = (freq_idx + 1) % FREQUENCY_BUFFER_SIZE;
-				if (freq_count < FREQUENCY_BUFFER_SIZE) {
-					freq_count++;
-				}
-			}
-			if (freq_count > 0) {
-			// Calcular frecuencia promedio SOLO cuando se va a enviar (reduce jitter)
-			uint64_t sum_freq = 0;
-			for (int i = 0; i < freq_count; i++) {
-				sum_freq += freq_buffer[i];
-			}
-			uint32_t avg_frequency = (uint32_t)(sum_freq / freq_count);
-
-			// Enviar por UART la frecuencia promedio
-			char out[40];
-			itoa_simple((int)avg_frequency, out);
-			send_string(out);
-			send_string(" Hz\r\n");
-		} else {
-			// No se detectaron cruces válidos recientemente
-			send_string("Sin señal valida...\r\n");
-		}
-        }
+    		if (calibrated){
+    			volatile uint32_t *buffer = NULL;
+    			if (buffer_ready_dma == 1){
+    			        buffer = bufferADC_A;
+    			        buffer_ready_dma = 0; // Resetear bandera
+    			    } else if (buffer_ready_dma == 2){
+    			        buffer = bufferADC_B;
+    			        buffer_ready_dma = 0; // Resetear bandera
+    			    }
+    			if(buffer != NULL){
+    				frequency = estimate_frequency((uint32_t *)buffer);
+    			}
+    			// Filtrar frecuencias plausibles antes de almacenar
+    			if(frequency > 80 && frequency < 400){
+    				// Almacenar en buffer circular para posterior promediado
+    				freq_buffer[freq_idx] = frequency;
+    				freq_idx = (freq_idx + 1) % FREQUENCY_BUFFER_SIZE;
+    				if (freq_count < FREQUENCY_BUFFER_SIZE) {
+    					freq_count++;
+    				}
+    			}
+    			if (freq_count > 0) {
+    			// Calcular frecuencia promedio SOLO cuando se va a enviar (reduce jitter)
+    			uint64_t sum_freq = 0;
+    			for (int i = 0; i < freq_count; i++) {
+    				sum_freq += freq_buffer[i];
+    			}
+    			uint32_t avg_frequency = (uint32_t)(sum_freq / freq_count);
+    			char out[40];
+    			itoa_simple((int)avg_frequency, out);
+    			send_string(out);
+    			send_string(" Hz\r\n");
+    			compare_frequency(avg_frequency);
+    			}
+            }
+    	}
     }
 }
 /** ----------------- CONFIGURACIONES ------------------- */
@@ -295,10 +300,24 @@ void cfgEINT(void){
     PINSEL_ConfigPin(&pinEINT);
 
     EXTI_SetMode(EXTI_EINT0, EXTI_MODE_EDGE_SENSITIVE);
-    //EXTI_SetPolarity(EXTI_EINT0, EXTI_POLARITY_LOW_ACTIVE); // Flanco de bajada
+    EXTI_SetPolarity(EXTI_EINT0, EXTI_POLARITY_LOW_ACTIVE_OR_FALLING_EDGE); // Flanco de bajada
     EXTI_ClearEXTIFlag(EXTI_EINT0);
 
     NVIC_EnableIRQ(EINT0_IRQn);
+
+    pinEINT.Portnum = 2;
+    pinEINT.Pinnum = 11;
+    pinEINT.Funcnum = 1;
+    pinEINT.Pinmode = PINSEL_PINMODE_PULLUP;
+    pinEINT.OpenDrain = PINSEL_PINMODE_NORMAL;
+    PINSEL_ConfigPin(&pinEINT);
+
+    EXTI_SetMode(EXTI_EINT1, EXTI_MODE_EDGE_SENSITIVE);
+    EXTI_SetPolarity(EXTI_EINT1, EXTI_POLARITY_LOW_ACTIVE_OR_FALLING_EDGE); // Flanco de bajada
+    EXTI_ClearEXTIFlag(EXTI_EINT1);
+
+    NVIC_EnableIRQ(EINT1_IRQn);
+
 }
 
 /** -----------------  HANDLERS ------------------- */
@@ -338,10 +357,21 @@ void DMA_IRQHandler(void){
  * @brief Handler de EINT0 para iniciar calibracion
  */
 void EINT0_IRQHandler(void){
+	start ^= 1;
     calibration_mode = 1;
-    calibrated = 0;
+
     EXTI_ClearEXTIFlag(EXTI_EINT0);
     NVIC_ClearPendingIRQ(EINT0_IRQn);
+}
+
+/**
+ * @brief Handler de EINT0 para iniciar calibracion
+ */
+void EINT1_IRQHandler(void){
+	curr_string = (curr_string + 1)%STRINGS;
+
+    EXTI_ClearEXTIFlag(EXTI_EINT1);
+    NVIC_ClearPendingIRQ(EINT1_IRQn);
 }
 
 void ADC_IRQHandler(){
@@ -500,6 +530,32 @@ uint32_t estimate_frequency(uint32_t *samples){
 	return frequency;
 }
 
+void compare_frequency(uint32_t f){
+	char out[40];
+	uint16_t frequency = (uint16_t)strings[curr_string];
+	send_string("frecuencia de comparacion: ");
+	itoa_simple(frequency, out);
+	send_string(out);
+	send_string(" Hz)\r\n");
+    // Compara con frecuencia objetivo
+    if ((f > frequency - FREQUENCY_THRESHOLD) && (f < frequency + FREQUENCY_THRESHOLD)){
+        send_string("CUERDA AFINADA ✓\r\n");
+    }
+    else if (f < frequency + FREQUENCY_THRESHOLD){
+        uint32_t diff = frequency - f;  // Cuánto falta subir
+        itoa_simple(diff, out);
+        send_string("TENSAR (+");
+        send_string(out);
+        send_string(" Hz)\r\n");
+    }
+    else {
+    	uint32_t diff = f - frequency;  // Cuánto falta bajar
+        itoa_simple(diff, out);
+        send_string("DESTENSAR (-");
+        send_string(out);
+        send_string(" Hz)\r\n");
+    }
+}
 
 /** -----------------  UTILITIES ------------------- */
 /**
