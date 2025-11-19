@@ -21,11 +21,11 @@ STRING_NAMES = ["E4", "B3", "G3", "D3", "A2", "E2"]
 class TunerGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("AutoTune1769")
+        self.root.title("GuitarTuna1769")
         self.root.geometry("400x500")
         self.root.configure(bg="#222222")
 
-        title = tk.Label(root, text="AutoTune1769", font=("Arial", 22, "bold"), fg="white", bg="#222222")
+        title = tk.Label(root, text="GuitarTuna1769", font=("Arial", 22, "bold"), fg="white", bg="#222222")
         title.pack(pady=10)
 
         # Nueva: Indicador de Calibración

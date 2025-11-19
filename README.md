@@ -38,12 +38,12 @@ El sistema soporta la afinación estándar de una guitarra de 6 cuerdas:
 
 | Índice (curr\_string) | Cuerda | Frecuencia Objetivo (Hz) |
 | :--- | :--- | :--- |
-| 0 | Mi (E) - Aguda | 340 Hz |
-| 1 | Si (B) | 266 Hz |
-| 2 | Sol (G) | 222 Hz |
-| 3 | Re (D) | 171 Hz |
-| 4 | La (A) | 178 Hz |
-| 5 | Mi (E) - Grave | 205 Hz |
+| 0 | Mi (E) - Aguda | 342 Hz |
+| 1 | Si (B) | 280 Hz |
+| 2 | Sol (G) | 209 Hz |
+| 3 | Re (D) | 165 Hz |
+| 4 | La (A) | 147 Hz |
+| 5 | Mi (E) - Grave | 202 Hz |
 
 ---
 
@@ -64,7 +64,7 @@ Para compilar y ejecutar este proyecto en un entorno de desarrollo integrado (ID
 3.  **Afinación:**
     * **Seleccionar Cuerda:** Pulsa el botón conectado a **EINT1 (P2.11)** para ciclar a través de las 6 cuerdas.
     * **Afinar:** Toca la cuerda que desees afinar. Observa los LEDs:
-        * **🟢 Verde:** Afinado (Dentro de $ \pm 15$ Hz del objetivo).
+        * **🟢 Verde:** Afinado (Dentro de $15$ Hz del objetivo).
         * **🟡 Amarillo:** Demasiado bajo (TENSAR).
         * **🔴 Rojo:** Demasiado alto (DESTENSAR).
 4.  **Monitoreo:** Conecta un terminal serial (9600 baudios, 8N1) a **UART0 (P0.2/P0.3)** para visualizar los mensajes de estado:

@@ -65,7 +65,7 @@ typedef struct {
 
 /* MACROS PARA LA COMPARACION DE FRECUENCIAS Y ESTADO DE LEDS */
 #define STRINGS 6
-#define FREQUENCY_THRESHOLD 15
+#define FREQUENCY_THRESHOLD 10
 
 /* MACROS DE LOS LEDS*/
 #define LED_RED (1<<27)    // P0.27
@@ -105,7 +105,7 @@ volatile uint8_t buffer_ready_dma = 0;           // Bandera para indicar que el 
 volatile uint8_t buffer_ready_calibrate = 0;     // Bandera para indicar que el buffer de calibración está listo
 
 /* Cuerdas */
-static uint16_t strings[STRINGS] = {340, 266, 222, 171, 178, 205};  // Frecuencias objetivo de las cuerdas (Hz)
+static uint16_t strings[STRINGS] = {342, 280, 209, 165, 147, 202};  // Frecuencias objetivo de las cuerdas (Hz)
 static uint8_t curr_string = 0;                                     // Índice de la cuerda actual
 
 static uint8_t start = 0;       // Bandera para iniciar el sistema
@@ -327,7 +327,7 @@ void cfgDMA(void){
 
     cfgLLI_A->SrcAddr = (uint32_t)&LPC_ADC->ADGDR;
     cfgLLI_A->DstAddr = (uint32_t)bufferADC_A;
-    cfgLLI_A->NextLLI = (uint32_t)cfgLLI_B; // apunta al propio descriptor (no &cfgLLI)
+    cfgLLI_A->NextLLI = (uint32_t)cfgLLI_B; // apunta al propio descriptor
     cfgLLI_A->Control = (NUM_SAMPLES & 0xFFF)    // transfer size
                     | (2 << 18)                // src width = word (32 bits)
                     | (2 << 21)                // dst width = word
@@ -336,7 +336,7 @@ void cfgDMA(void){
 
     cfgLLI_B->SrcAddr = (uint32_t)&LPC_ADC->ADGDR;
     cfgLLI_B->DstAddr = (uint32_t)bufferADC_B;
-    cfgLLI_B->NextLLI = (uint32_t)cfgLLI_A; // apunta al propio descriptor (no &cfgLLI)
+    cfgLLI_B->NextLLI = (uint32_t)cfgLLI_A; // apunta al propio descriptor
     cfgLLI_B->Control = (NUM_SAMPLES & 0xFFF)    // transfer size
                     | (2 << 18)                // src width = word (32 bits)
                     | (2 << 21)                // dst width = word
@@ -444,10 +444,10 @@ void EINT0_IRQHandler(void){
 
     if(start){
         char msg_start[] = "CONTROL:INIT\r\n"; // Mensaje de inicio por UART
-    	UART_Send((LPC_UART_TypeDef *)LPC_UART0, (uint8_t *)msg_start, strlen(msg_start), BLOCKING);        
+    	UART_Send((LPC_UART_TypeDef *)LPC_UART0, (uint8_t *)msg_start, strlen(msg_start), BLOCKING);
     }else{
         char msg_stop[] = "CONTROL:STOP\r\n"; // Mensaje de parada por UART
-    	UART_Send((LPC_UART_TypeDef *)LPC_UART0, (uint8_t *)msg_stop, strlen(msg_stop), BLOCKING);        
+    	UART_Send((LPC_UART_TypeDef *)LPC_UART0, (uint8_t *)msg_stop, strlen(msg_stop), BLOCKING);
     }
     EXTI_ClearEXTIFlag(EXTI_EINT0);
     NVIC_ClearPendingIRQ(EINT0_IRQn);
