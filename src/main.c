@@ -59,8 +59,8 @@ typedef struct {
 #define ALPHA_SCALER 1000                                           // Escala para cálculos enteros
 #define ALPHA_COEFF 990                                             // Coeficiente alpha = 0.99 (corte bajo ~100 Hz)
 #define BETA_SCALER 1000                                            // Escala para cálculos enteros
-#define BETA_COEFF 700                                              // Coeficiente Beta = 0.9 (Suavizado)
-#define ONE_MINUS_BETA_COEFF 300                                    // Coeficiente 1 - Beta = 0.1
+#define BETA_COEFF 700                                              // Coeficiente Beta = 0.7 (Suavizado)
+#define ONE_MINUS_BETA_COEFF 300                                    // Coeficiente 1 - Beta = 0.3
 #define FREQUENCY_BUFFER_SIZE 50                                    // Tamaño del buffer circular de frecuencias
 
 /* MACROS PARA LA COMPARACION DE FRECUENCIAS Y ESTADO DE LEDS */

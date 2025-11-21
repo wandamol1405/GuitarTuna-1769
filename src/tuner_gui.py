@@ -1,12 +1,10 @@
 import serial
 import threading
 import tkinter as tk
-from tkinter import ttk
 
 # ---------------------------------------------------
 # CONFIGURACIÓN PUERTO SERIAL
 # ---------------------------------------------------
-# ¡IMPORTANTE! Reemplaza "COM12" con el puerto serial de tu conversor USB a TTL
 SERIAL_PORT = "COM12"  
 BAUD_RATE = 9600
 
