@@ -83,7 +83,7 @@ La señal acústica es captada por un micrófono electret preamplificado (MAX981
 | **GPIO (LED)** | Status Indicator | P0.27 (Red), P0.28 (Green), P2.13 (Yellow) | Tuning feedback |
 
 
-### Frecuencias objetivo - Calibrated Target Frequencies
+### Frecuencias objetivo - *Calibrated Target Frequencies*
 Las frecuencias objetivo estan ajustadas en base a mediciones reales del sistema usando un afinador comercial de referencia, compensando el efecto armónico complejo de la guitarra y la respuesta del AGC.
 
 *Target frequencies are tuned based on real-world measurements of the system (SEP/MAX9814) using a commercial reference tuner, compensating for the guitar's complex harmonic effect and the AGC response.*
@@ -100,7 +100,7 @@ Las frecuencias objetivo estan ajustadas en base a mediciones reales del sistema
 
 ---
 
-## Instrucciones de uso
+## Instrucciones de uso - *Usage*
 
 ### 1. Requisitos de Hardware Adicionales - *Additional Hardware Requirements*
 * Placa de desarrollo LPC1769 - *LPC1769 development board.*
