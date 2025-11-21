@@ -11,7 +11,7 @@ El sistema se encarga de :
 3. Aplicar algoritmos de procesamiento digital de señales (DSP) para la estimación de la frecuencia fundamental.
 4. Proporcionar retroalimentación visual al usuario a través de LEDs y comunicación de datos estructurada vía UART para una Interfaz Gráfica de Usuario (GUI) externa.
 
-## Project Description
+## *Project Description*
 *This project implements a digital guitar tuner using the NXP LPC1769 microcontroller (ARM Cortex-M3). The system is responsible for:*
 
 1. *Capturing the audio signal from a pre-amplified microphone (MAX9814).*
@@ -27,7 +27,7 @@ La señal acústica es captada por un micrófono electret preamplificado (MAX981
 - Ratio A/R (Ataque/Liberación) rápido (1:500) para manejar los picos iniciales de la pulsación de la cuerda y recuperar la ganancia dirante el sostenido de la nota.
 - Salida analógica centrda en 1.23V para adecuarse al rango de entrada del ADC del LPC1769.
 
-## Acquisition Module (MAX9814)
+### *Acquisition Module (MAX9814)*
 *The acoustic signal is captured by an electret microphone with a pre-amplifier (MAX9814). For this project, the module was specifically configured for string instrument acquisition:*
 - *Gain: Minimum (40 dB) to prevent ADC saturation (GAIN Pin connected to VDD).*
 - *A/R Ratio (Attack/Release): Fast (1:500) to handle the initial peaks of the string pluck and recover gain during the note's sustain (A/R Pin connected to GND).*
